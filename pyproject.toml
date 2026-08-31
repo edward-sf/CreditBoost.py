@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "creditboost"
 version = "0.1.0"
 description = "Loan default risk scoring for thin-file borrowers"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -46,7 +46,7 @@ extend-exclude = ["docs"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 ignore_missing_imports = true
 # No `packages` key: CI invokes `mypy src/`, and mypy rejects a path argument
 # when packages is also configured.
