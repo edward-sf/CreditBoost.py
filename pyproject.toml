@@ -11,7 +11,13 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
-    "xgboost>=2.1",
+    # xgboost's Linux wheels pull in ~291MB of NVIDIA CUDA libraries that
+    # CPU-only inference never uses; macOS has no CUDA build anyway, and
+    # xgboost-cpu ships no macOS wheel, so the CPU-only build is scoped to
+    # Linux (the runtime image and CI) while other platforms keep the
+    # standard package.
+    "xgboost-cpu>=2.1; platform_system == 'Linux'",
+    "xgboost>=2.1; platform_system != 'Linux'",
     "pandas>=2.2",
     "numpy>=1.26",
 ]
