@@ -1,8 +1,8 @@
 {
   "version": "0.1.0",
-  "trained_at": "2026-09-01T00:21:47+00:00",
-  "dataset_sha256": "49482971d9d7d820033187ad37bc366dbd8965f9be670aa469eab274b915f95a",
-  "n_train_rows": 160,
+  "trained_at": "2026-09-01T03:38:24+00:00",
+  "dataset_sha256": "52e96b895b1112e1c853f670e58372719c8441c5ed1c57ac2f7fad559d784f5f",
+  "n_train_rows": 246008,
   "feature_order": [
     "EXT_SOURCE_1",
     "EXT_SOURCE_2",
@@ -27,10 +27,10 @@
     "employed_to_age"
   ],
   "metrics": {
-    "roc_auc": 0.8288288288288288,
-    "pr_auc": 0.23333333333333334,
-    "brier": 0.07598742842674255
+    "roc_auc": 0.753328465696609,
+    "pr_auc": 0.24101143592499696,
+    "brier": 0.06795474886894226
   },
   "xgboost_version": "3.4.1",
-  "provenance": "fixture"
+  "provenance": "production"
 }
