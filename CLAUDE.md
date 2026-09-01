@@ -4,21 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**There is no application code yet.** This repository currently contains only planning
-documents. The first implementation task has not been started.
+**Milestone 1 — the thin end-to-end slice — is implemented, tested, and merged.** The
+package lives under `src/creditboost/`, tests under `tests/`, and a production-trained
+artifact is committed at `models/model.json` / `models/model_meta.json`.
 
 - Design spec: `docs/superpowers/specs/2026-08-30-creditboost-thin-slice-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-08-30-creditboost-thin-slice.md`
 
-Read both before writing code. The plan is task-by-task with real test code; follow it
-rather than improvising an equivalent structure.
+Both describe the reasoning behind the decisions recorded in Architecture and Invariants
+below — read them to understand *why* the code looks the way it does, not as a description
+of work still to do. Any future work on this codebase (bug fixes, Milestone 2 and beyond)
+should still follow the plan's task-by-task, test-first structure rather than improvising an
+equivalent one.
 
 ## Roadmap
 
-**Milestone 1 — thin end-to-end slice.** Specced and planned. A deliberately minimal path
-through all three subsystems: Home Credit training data, a 21-feature XGBoost model, a
-committed artifact baked into a container, a FastAPI `/predict`, and GitHub Actions
-publishing to GHCR. Eleven tasks, of which only the last requires Kaggle credentials.
+**Milestone 1 — thin end-to-end slice.** Done. A deliberately minimal path through all
+three subsystems: Home Credit training data, a 21-feature XGBoost model, a committed
+artifact baked into a container, a FastAPI `/predict`, and GitHub Actions publishing to
+GHCR. All eleven tasks landed; the committed artifact in `models/` is `provenance:
+"production"`, trained on the real Kaggle dataset (roc_auc 0.7533).
 
 **Milestone 2 — model artifact storage.** Deliberately **not** specced or planned yet.
 Milestone 1 commits the trained model to git, which is poor practice as a permanent
@@ -47,6 +52,22 @@ Dependency direction is one-way: `serve/` imports `artifact`, `features`, `schem
 `banding`, and `config` — never `data` or `train`. This is what keeps scikit-learn out of
 the runtime image, and it is enforced by a subprocess test, not just a comment.
 
+The serving app logs structured JSON to stdout via `serve/logging_config.py`, configuring
+only the `creditboost` logger tree (never the root logger or uvicorn's own loggers, and
+never `logging.basicConfig()`) so records aren't dropped under uvicorn and aren't double-
+logged in uvicorn's plain-text format. `artifact.load()` is the train/serve skew gate: it
+checks both the metadata sidecar's `feature_order` *and* the booster's own `feature_names`
+baked into `model.json` against `config.FEATURE_ORDER`, because either one can drift
+independently of the other.
+
+The project targets Python 3.12 only (`requires-python = ">=3.12"` in `pyproject.toml`,
+developed and tested on 3.12.4). `xgboost` is pulled in via environment markers: Linux
+(the runtime image and CI) gets `xgboost-cpu`, which skips the ~291MB of CUDA libraries
+that CPU-only inference never uses; other platforms (including macOS, which has no
+`xgboost-cpu` wheel) get the standard `xgboost` package. On macOS, `xgboost` also needs the
+OpenMP runtime, which isn't bundled: run `brew install libomp` before `pip install`, or
+`import xgboost` fails.
+
 ## Invariants
 
 These are easy to break silently and each has a test guarding it. Do not change one without
@@ -60,7 +81,9 @@ understanding why it exists.
 - The `DAYS_EMPLOYED == 365243` sentinel is scrubbed to NaN **before** derived ratios are
   computed. Left raw it becomes a ~1000-year tenure that reads as a plausible value.
 - **Missing values are never imputed.** NaN reaches XGBoost intact — for a thin-file
-  borrower, a missing external credit score is itself signal.
+  borrower, a missing external credit score is itself signal. Every optional field in
+  `PredictRequest` (e.g. `CNT_CHILDREN`) defaults to `None`, not a business default like
+  `0`, so an omitted field degrades to NaN through the same path as an unknown one.
 - **No `scale_pos_weight`.** It inflates probabilities away from the true base rate, which
   would decalibrate the score the service bands and reports a Brier score for. This is a
   deliberate deviation from the spec; see the plan's Task 7.
@@ -83,7 +106,12 @@ spec, recorded in the plan.
 
 ## Commands
 
-**These become available once Task 1 has landed.** They do not work yet.
+Requires Python 3.12. On macOS, install the OpenMP runtime first — `xgboost` cannot be
+imported without it:
+
+```bash
+brew install libomp
+```
 
 ```bash
 pip install -e ".[train,dev]"        # editable install with training and dev extras

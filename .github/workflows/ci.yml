@@ -1,0 +1,109 @@
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[train,dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy src/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -e ".[train,dev]"
+      - run: pytest -v --cov=creditboost --cov-report=term-missing
+
+  build:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: creditboost:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run the container and smoke-test it
+        run: |
+          docker run -d --rm --name creditboost-ci -p 8000:8000 creditboost:ci
+          ./scripts/smoke.sh http://localhost:8000
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs creditboost-ci
+      - name: Stop the container
+        if: always()
+        run: docker stop creditboost-ci || true
+
+  push:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Scoped to this job alone, so pull requests from forks never receive
+    # registry credentials.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-buildx-action@v3
+      - name: Compute the lowercase image name
+        id: image
+        # GHCR requires a lowercase repository name; github.repository_owner
+        # is not guaranteed lowercase (an org or user can contain capitals),
+        # so it is lowercased defensively before the fixed "creditboost"
+        # package name is appended.
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${owner}/creditboost" >> "$GITHUB_OUTPUT"
+      - name: Read the model version
+        id: version
+        run: echo "value=$(python -c "import json;print(json.load(open('models/model_meta.json'))['version'])")" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+            ${{ steps.image.outputs.name }}:${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
