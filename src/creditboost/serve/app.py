@@ -22,6 +22,7 @@ from ..banding import risk_band
 from ..features import transform
 from ..schema import PredictRequest, PredictResponse
 from . import deps
+from .logging_config import configure_logging
 
 logger = logging.getLogger("creditboost.serve")
 
@@ -30,6 +31,8 @@ def create_app(
     model_path: Path = config.MODEL_PATH,
     metadata_path: Path = config.METADATA_PATH,
 ) -> FastAPI:
+    configure_logging()
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # Any failure here propagates and the process exits non-zero. That is

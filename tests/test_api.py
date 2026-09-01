@@ -132,18 +132,54 @@ def test_startup_fails_on_a_feature_order_mismatch(artifact_paths, tmp_path):
         pass
 
 
-def test_prediction_logs_carry_no_applicant_financial_data(client, caplog):
+def test_prediction_logs_carry_no_applicant_financial_data(client):
     """Financial fields are exactly the PII that must not accumulate in log
-    aggregation. Only band, version, latency, and request id may be logged."""
+    aggregation. Only band, version, latency, and request id may be logged.
+
+    Inspects the actual formatted JSON the production JsonFormatter emits --
+    not record.getMessage(), which is a constant string ("prediction
+    served"). Every field the app logs travels via `extra=`, so a check of
+    getMessage() alone is blind to all of it and would pass even if the app
+    logged the applicant's income directly. A temporary handler carrying the
+    real JsonFormatter is attached to the "creditboost.serve" logger for the
+    duration of the request, and the assertions run against its rendered
+    output -- the same bytes a running container would write to stdout.
+    """
+    import io
+    import json
     import logging
 
-    with caplog.at_level(logging.INFO, logger="creditboost.serve"):
-        client.post("/predict", json=minimal_payload() | {"AMT_INCOME_TOTAL": 123456.0})
+    from creditboost.serve.logging_config import JsonFormatter
 
-    logged = " ".join(record.getMessage() for record in caplog.records)
-    assert "123456" not in logged
+    distinctive_income = 823456.0
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    serve_logger = logging.getLogger("creditboost.serve")
+    serve_logger.addHandler(handler)
+    try:
+        response = client.post(
+            "/predict", json=minimal_payload() | {"AMT_INCOME_TOTAL": distinctive_income}
+        )
+        assert response.status_code == 200
+    finally:
+        serve_logger.removeHandler(handler)
+
+    emitted_lines = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    served = [line for line in emitted_lines if line.get("message") == "prediction served"]
+    assert served, "expected a 'prediction served' log line"
+    record = served[-1]
+
+    emitted_text = stream.getvalue()
+    assert "823456" not in emitted_text
     for field in ("AMT_INCOME_TOTAL", "AMT_CREDIT", "DAYS_BIRTH", "EXT_SOURCE_1"):
-        assert field not in logged
+        assert field not in emitted_text
+
+    # The permitted fields must actually be present -- this is what makes the
+    # test able to fail: a guard that never checks for anything positive
+    # would also pass if logging emitted nothing at all.
+    for expected_key in ("request_id", "latency_ms", "model_version", "risk_band"):
+        assert expected_key in record, f"expected {expected_key!r} in {record!r}"
 
 
 def test_serving_does_not_import_the_training_stack():

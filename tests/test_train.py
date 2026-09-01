@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import xgboost as xgb
 
 from creditboost import config
 from creditboost.artifact import load
@@ -82,8 +83,30 @@ def test_cli_refuses_to_write_a_model_below_the_auc_floor(fixture_path, tmp_path
     assert not meta_path.exists()
 
 
-def test_committed_fixture_artifact_is_present_and_declares_its_provenance():
-    """Tasks 9 and 10 depend on this artifact existing in the repo."""
+def test_committed_artifact_is_present_and_is_production_provenance():
+    """Tasks 9 and 10 depend on this artifact existing in the repo, and this
+    is what's shipped in the container CI publishes to GHCR: it must be the
+    real thing, not a fixture-trained stand-in. `provenance in {"fixture",
+    "production"}` would be vacuous -- the Pydantic Literal already
+    guarantees that -- so this asserts the actually meaningful claim."""
     metadata = json.loads(config.METADATA_PATH.read_text())
-    assert metadata["provenance"] in {"fixture", "production"}
+    assert metadata["provenance"] == "production"
     assert metadata["feature_order"] == list(config.FEATURE_ORDER)
+
+
+def test_committed_artifact_excludes_gender_and_raw_age():
+    """ECOA / Regulation B: sex and age are prohibited bases for credit
+    decisions. test_config.py asserts this against the source constants;
+    this asserts it against the actual committed, shipped artifact -- both
+    the metadata sidecar's feature_order and the booster's own feature_names
+    baked into model.json -- so a fairness regression in the shipped model
+    itself, not just in the code that produced it, would be caught."""
+    metadata = json.loads(config.METADATA_PATH.read_text())
+    assert "CODE_GENDER" not in metadata["feature_order"]
+    assert "DAYS_BIRTH" not in metadata["feature_order"]
+
+    booster = xgb.Booster()
+    booster.load_model(str(config.MODEL_PATH))
+    feature_names = booster.feature_names or []
+    assert "CODE_GENDER" not in feature_names
+    assert "DAYS_BIRTH" not in feature_names

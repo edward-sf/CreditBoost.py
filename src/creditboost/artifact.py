@@ -133,4 +133,25 @@ def load(
         raise CorruptModelError(
             f"model artifact at {model_path} could not be loaded by xgboost: {err}"
         ) from err
+
+    # The metadata sidecar can be checked above and still agree with
+    # FEATURE_ORDER while the booster's OWN feature_names -- baked directly
+    # into model.json -- disagree, e.g. a transposed-features artifact. A
+    # booster built from a raw numpy-array DMatrix has feature_names is None
+    # ("no names recorded"); that is not a mismatch, so it is skipped rather
+    # than raised on.
+    if booster.feature_names is not None and list(booster.feature_names) != expected:
+        booster_names = list(booster.feature_names)
+        disagreement = _first_disagreement(booster_names, expected)
+        length_note = (
+            f"artifact has {len(booster_names)} features, code expects {len(expected)}"
+            if len(booster_names) != len(expected)
+            else None
+        )
+        detail = "; ".join(part for part in (disagreement, length_note) if part)
+        raise FeatureOrderMismatchError(
+            "artifact booster feature_names does not match this build's FEATURE_ORDER; "
+            f"{detail}. Retrain the model against this code."
+        )
+
     return LoadedModel(booster=booster, metadata=metadata)

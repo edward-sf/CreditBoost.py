@@ -62,6 +62,44 @@ def test_load_rejects_a_merely_reordered_feature_list(tmp_path, booster):
         load(model_path, meta_path)
 
 
+def test_load_rejects_a_booster_whose_own_feature_names_disagree(tmp_path):
+    """The metadata sidecar can agree with FEATURE_ORDER while the booster's
+    own feature_names -- baked directly into model.json -- disagree, e.g. a
+    transposed-features artifact. Both must be checked, or such an artifact
+    loads fine, passes HEALTHCHECK, and 500s on every request.
+
+    Uses a DMatrix built with an explicit (transposed) feature_names list
+    rather than the module's `booster` fixture, whose numpy-array DMatrix has
+    feature_names is None -- exactly the "no names recorded" case that must
+    be skipped, not raised on.
+    """
+    rng = np.random.default_rng(0)
+    transposed_names = list(config.FEATURE_ORDER)
+    transposed_names[0], transposed_names[1] = transposed_names[1], transposed_names[0]
+    matrix = xgb.DMatrix(
+        rng.normal(size=(40, len(config.FEATURE_ORDER))),
+        label=rng.integers(0, 2, 40),
+        feature_names=transposed_names,
+    )
+    named_booster = xgb.train({"objective": "binary:logistic"}, matrix, num_boost_round=2)
+
+    model_path, meta_path = tmp_path / "model.json", tmp_path / "meta.json"
+    save(named_booster, metadata(), model_path, meta_path)
+    with pytest.raises(FeatureOrderMismatchError):
+        load(model_path, meta_path)
+
+
+def test_load_accepts_a_booster_with_no_recorded_feature_names(tmp_path, booster):
+    """A booster trained from a raw numpy-array DMatrix has feature_names is
+    None. That must be treated as 'no names recorded' and skipped, not
+    raised on -- this is exactly the shape of the `booster` fixture used
+    throughout this module."""
+    assert booster.feature_names is None
+    model_path, meta_path = tmp_path / "model.json", tmp_path / "meta.json"
+    save(booster, metadata(), model_path, meta_path)
+    load(model_path, meta_path)  # must not raise
+
+
 def test_load_raises_when_the_model_file_is_absent(tmp_path, booster):
     meta_path = tmp_path / "meta.json"
     meta_path.write_text(metadata().model_dump_json())
