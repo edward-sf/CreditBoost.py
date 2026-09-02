@@ -1,3 +1,6 @@
+import http.server
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -188,3 +191,184 @@ def test_verify_via_the_cli_returns_one_and_explains_on_failure(
 # is enforced by the import-linter contract, extended in Step 4 below. It is
 # deliberately NOT a test here: the rule is static, so a static contract that
 # sees the whole import graph beats per-module sys.modules inspection.
+
+
+class _Handler(http.server.BaseHTTPRequestHandler):
+    """Serves files from `directory`, optionally failing the first N requests
+    per path so the retry path can be exercised."""
+
+    directory: Path
+    failures_remaining: dict[str, int] = {}
+
+    def do_GET(self) -> None:  # noqa: N802  (http.server's required name)
+        name = self.path.rsplit("/", 1)[-1]
+        if self.failures_remaining.get(name, 0) > 0:
+            self.failures_remaining[name] -= 1
+            self.send_error(503, "temporarily unavailable")
+            return
+        target = self.directory / name
+        if not target.exists():
+            self.send_error(404, "not found")
+            return
+        payload = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args: object) -> None:
+        return  # keep pytest output clean
+
+
+@pytest.fixture
+def asset_server(tmp_path: Path) -> Iterator[tuple[str, Path, dict[str, int]]]:
+    """Yields (base_url, served_directory, failures_remaining)."""
+    served = tmp_path / "served"
+    served.mkdir()
+    failures: dict[str, int] = {}
+
+    handler = type("Handler", (_Handler,), {"directory": served, "failures_remaining": failures})
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/releases/download", served, failures
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_fetch_downloads_both_assets(tmp_path: Path, asset_server) -> None:
+    base_url, served, _ = asset_server
+    make_artifact(served)
+    lock = lockfile.write(
+        tmp_path / "model.lock.json",
+        release_tag="model-v0.1.0",
+        model_path=served / lockfile.MODEL_FILENAME,
+        metadata_path=served / lockfile.METADATA_FILENAME,
+        asset_base_url=base_url,
+    )
+
+    from creditboost.artifact_cli import fetch_artifact
+
+    destination = tmp_path / "downloaded"
+    fetch_artifact(destination, lock)
+
+    assert (destination / lockfile.MODEL_FILENAME).exists()
+    assert (destination / lockfile.METADATA_FILENAME).exists()
+
+
+def test_fetched_assets_then_verify(tmp_path: Path, asset_server) -> None:
+    """fetch and verify are two halves of one job; this is the pair the
+    Dockerfile actually runs."""
+    base_url, served, _ = asset_server
+    make_artifact(served)
+    lock = lockfile.write(
+        tmp_path / "model.lock.json",
+        release_tag="model-v0.1.0",
+        model_path=served / lockfile.MODEL_FILENAME,
+        metadata_path=served / lockfile.METADATA_FILENAME,
+        asset_base_url=base_url,
+    )
+
+    from creditboost.artifact_cli import fetch_artifact
+
+    destination = tmp_path / "downloaded"
+    fetch_artifact(destination, lock)
+    verify_artifact(destination, lock)
+
+
+def test_a_missing_release_asset_fails_without_retrying(
+    tmp_path: Path, asset_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 404 is a real defect -- a deleted release or a wrong tag. Retrying it
+    only delays a truthful failure."""
+    import creditboost.artifact_cli as cli
+
+    base_url, served, _ = asset_server
+    make_artifact(served)
+    lock = lockfile.write(
+        tmp_path / "model.lock.json",
+        release_tag="model-v0.1.0",
+        model_path=served / lockfile.MODEL_FILENAME,
+        metadata_path=served / lockfile.METADATA_FILENAME,
+        asset_base_url=base_url,
+    )
+    (served / lockfile.MODEL_FILENAME).unlink()
+
+    attempts = 0
+    original = cli._download_once
+
+    def counting(url: str, dest: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        original(url, dest)
+
+    monkeypatch.setattr(cli, "_download_once", counting)
+
+    with pytest.raises(cli.AssetNotFoundError, match="model-v0.1.0"):
+        cli.fetch_artifact(tmp_path / "downloaded", lock)
+    assert attempts == 1, "a 404 must not be retried"
+
+
+def test_a_transient_failure_is_retried_and_succeeds(
+    tmp_path: Path, asset_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import creditboost.artifact_cli as cli
+
+    monkeypatch.setattr(cli, "RETRY_BACKOFF_SECONDS", 0.0)
+
+    base_url, served, failures = asset_server
+    make_artifact(served)
+    lock = lockfile.write(
+        tmp_path / "model.lock.json",
+        release_tag="model-v0.1.0",
+        model_path=served / lockfile.MODEL_FILENAME,
+        metadata_path=served / lockfile.METADATA_FILENAME,
+        asset_base_url=base_url,
+    )
+    failures[lockfile.MODEL_FILENAME] = 2  # fail twice, succeed on the third
+
+    destination = tmp_path / "downloaded"
+    cli.fetch_artifact(destination, lock)
+
+    assert (destination / lockfile.MODEL_FILENAME).exists()
+
+
+def test_a_persistent_transient_failure_eventually_gives_up(
+    tmp_path: Path, asset_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import creditboost.artifact_cli as cli
+
+    monkeypatch.setattr(cli, "RETRY_BACKOFF_SECONDS", 0.0)
+
+    base_url, served, failures = asset_server
+    make_artifact(served)
+    lock = lockfile.write(
+        tmp_path / "model.lock.json",
+        release_tag="model-v0.1.0",
+        model_path=served / lockfile.MODEL_FILENAME,
+        metadata_path=served / lockfile.METADATA_FILENAME,
+        asset_base_url=base_url,
+    )
+    failures[lockfile.MODEL_FILENAME] = 99
+
+    with pytest.raises(cli.AssetDownloadError):
+        cli.fetch_artifact(tmp_path / "downloaded", lock)
+
+
+def test_fetch_via_the_cli_returns_zero(tmp_path: Path, asset_server) -> None:
+    base_url, served, _ = asset_server
+    make_artifact(served)
+    lock_path = tmp_path / "model.lock.json"
+    lockfile.write(
+        lock_path,
+        release_tag="model-v0.1.0",
+        model_path=served / lockfile.MODEL_FILENAME,
+        metadata_path=served / lockfile.METADATA_FILENAME,
+        asset_base_url=base_url,
+    )
+
+    destination = tmp_path / "downloaded"
+    assert main(["fetch", "--dir", str(destination), "--lockfile", str(lock_path)]) == 0
+    assert (destination / lockfile.MODEL_FILENAME).exists()

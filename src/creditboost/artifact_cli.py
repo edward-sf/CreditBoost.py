@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from . import config, lockfile
@@ -18,6 +21,10 @@ from .lockfile import METADATA_FILENAME, MODEL_FILENAME, ModelLock
 from .schema import ModelMetadata
 
 PROHIBITED_FEATURES = ("CODE_GENDER", "DAYS_BIRTH")
+
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 1.0
+DOWNLOAD_TIMEOUT_SECONDS = 30
 
 
 class ChecksumMismatchError(ArtifactError):
@@ -30,6 +37,54 @@ class ProvenanceError(ArtifactError):
 
 class VersionMismatchError(ArtifactError):
     """The artifact's version disagrees with config.MODEL_VERSION."""
+
+
+class AssetNotFoundError(ArtifactError):
+    """The release asset does not exist. Not retried: this is a real defect."""
+
+
+class AssetDownloadError(ArtifactError):
+    """The release asset could not be downloaded after retrying."""
+
+
+def _download_once(url: str, dest: Path) -> None:
+    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+        dest.write_bytes(response.read())
+
+
+def _download(url: str, dest: Path, release_tag: str) -> None:
+    """Download with backoff, but never retry a 404.
+
+    A transient blip should not fail an unrelated PR build; a missing asset is
+    a genuine defect and retrying it only delays a truthful failure.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            _download_once(url, dest)
+            return
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                raise AssetNotFoundError(
+                    f"release asset not found: {url} (release {release_tag}). "
+                    "Either the release was never created or it was deleted. "
+                    "Run scripts/release-model.sh to create it, and note that "
+                    "deleting a model release breaks every build pinned to it."
+                ) from err
+            last_error = err
+        except (urllib.error.URLError, OSError) as err:
+            last_error = err
+        if attempt < RETRY_ATTEMPTS:
+            time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+    raise AssetDownloadError(
+        f"could not download {url} after {RETRY_ATTEMPTS} attempts: {last_error}"
+    ) from last_error
+
+
+def fetch_artifact(directory: Path, lock: ModelLock) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for filename in (MODEL_FILENAME, METADATA_FILENAME):
+        _download(lock.asset_url(filename), directory / filename, lock.release_tag)
 
 
 def _check_digest(path: Path, expected: str) -> None:
@@ -115,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="creditboost-artifact")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    fetch_parser = subparsers.add_parser("fetch", help="download the pinned release assets")
+    _add_common(fetch_parser)
+
     verify_parser = subparsers.add_parser("verify", help="check an artifact against the lockfile")
     _add_common(verify_parser)
     verify_parser.add_argument(
@@ -128,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
     lock_path = args.lockfile if args.lockfile is not None else config.LOCKFILE_PATH
 
     try:
-        if args.command == "verify":
+        if args.command == "fetch":
+            lock = lockfile.read(lock_path)
+            fetch_artifact(directory, lock)
+            print(f"fetched {lock.release_tag} into {directory}")
+        elif args.command == "verify":
             lock = lockfile.read(lock_path)
             verify_artifact(directory, lock, allow_fixture=args.allow_fixture)
             print(f"artifact in {directory} verified against {lock.release_tag}")
