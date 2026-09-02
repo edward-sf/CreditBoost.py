@@ -1,4 +1,5 @@
 # tests/test_config.py
+import re
 from pathlib import Path
 
 from creditboost import config
@@ -97,3 +98,84 @@ def test_request_fields_is_the_concatenation_of_its_parts():
         + config.MONITORING_ONLY_FIELDS
     )
     assert config.REQUEST_FIELDS == expected
+
+
+def test_reason_concepts_partition_feature_order_exactly():
+    """The invariant that rots silently when the feature list changes: a feature
+    added without a concept would simply never be reportable, and nothing else
+    would notice."""
+    mapped = [name for features in config.REASON_CONCEPTS.values() for name in features]
+
+    assert len(mapped) == len(set(mapped)), "a feature appears in more than one concept"
+    assert set(mapped) == set(config.FEATURE_ORDER), (
+        f"unmapped features: {sorted(set(config.FEATURE_ORDER) - set(mapped))}; "
+        f"unknown names in the map: {sorted(set(mapped) - set(config.FEATURE_ORDER))}"
+    )
+
+
+def test_every_concept_has_reason_text():
+    assert set(config.REASON_TEXT) == set(config.REASON_CONCEPTS)
+
+
+def test_reason_codes_are_unique():
+    codes = [text.code for text in config.REASON_TEXT.values()]
+    assert len(codes) == len(set(codes))
+
+
+def test_absent_text_exists_exactly_where_it_is_reachable():
+    """A concept containing an always-present feature can never be fully absent,
+    so absent text there would be unreachable and would drift unnoticed."""
+    for concept, features in config.REASON_CONCEPTS.items():
+        can_be_absent = not (set(features) & set(config.ALWAYS_PRESENT_FEATURES))
+        has_absent = config.REASON_TEXT[concept].absent is not None
+        assert can_be_absent == has_absent, (
+            f"concept {concept!r}: reachable={can_be_absent} but absent text "
+            f"{'present' if has_absent else 'missing'}"
+        )
+
+
+def test_always_present_features_really_are_model_features():
+    for name in config.ALWAYS_PRESENT_FEATURES:
+        assert name in config.FEATURE_ORDER
+
+
+def test_no_reason_text_names_or_implies_a_protected_attribute():
+    """A reason code is a disclosure to the applicant. Saying their age, sex or
+    marital status counted against them is the exact harm the feature set was
+    cleaned to prevent -- the wording must not reintroduce it."""
+    forbidden = (
+        "age",
+        "aged",
+        "elderly",
+        "young",
+        "old",
+        "birth",
+        "sex",
+        "gender",
+        "male",
+        "female",
+        "marital",
+        "married",
+        "unmarried",
+        "spouse",
+        "widow",
+        "widowed",
+        "divorced",
+        "separated",
+    )
+    pattern = re.compile(r"\b(" + "|".join(forbidden) + r")\b", re.IGNORECASE)
+
+    for concept, text in config.REASON_TEXT.items():
+        for field in (text.unfavourable, text.absent):
+            if field is None:
+                continue
+            match = pattern.search(field)
+            assert match is None, (
+                f"concept {concept!r} text names a protected attribute "
+                f"({match.group(0)!r}): {field!r}"
+            )
+
+
+def test_max_reasons_is_four():
+    """Reg B's commentary treats more than four principal reasons as unhelpful."""
+    assert config.MAX_REASONS == 4
