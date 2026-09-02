@@ -55,14 +55,6 @@ CATEGORICAL_LEVELS: dict[str, tuple[str, ...]] = {
         "Lower secondary",
         "Academic degree",
     ),
-    "NAME_FAMILY_STATUS": (
-        "Single / not married",
-        "Married",
-        "Civil marriage",
-        "Widow",
-        "Separated",
-        "Unknown",
-    ),
     "NAME_HOUSING_TYPE": (
         "House / apartment",
         "Rented apartment",
@@ -106,10 +98,37 @@ FEATURE_ORDER: tuple[str, ...] = (
     NUMERIC_FEATURES + BINARY_FEATURES + CATEGORICAL_FEATURES + DERIVED_FEATURES
 )
 
-# DAYS_BIRTH is accepted from callers to derive employed_to_age, but raw age is
-# deliberately not a model feature: age is a protected basis under ECOA.
+# ECOA, 15 U.S.C. 1691(a)(1), names the prohibited bases in one sentence: race,
+# color, religion, national origin, sex or marital status, or age. None of them
+# may be a model feature.
+#
+# The rule is about features, not reads: the transform still reads DAYS_BIRTH to
+# derive employed_to_age. Regulation B allows age in an empirically derived,
+# demonstrably and statistically sound scoring system, provided an elderly
+# applicant is never assigned a negative factor for it. Marital status has no
+# equivalent allowance, which is why NAME_FAMILY_STATUS is not a feature.
+PROTECTED_ATTRIBUTES: tuple[str, ...] = (
+    "CODE_GENDER",
+    "DAYS_BIRTH",
+    "NAME_FAMILY_STATUS",
+)
+
+# Accepted from callers and retained so disparate-impact analysis remains
+# possible on live traffic, but never transformed and never scored on. Reg B
+# 1002.13 requires collecting certain protected attributes for exactly this
+# monitoring purpose. An attribute a service refuses to accept cannot be
+# collected retroactively; a feature can always be restored by retraining.
+MONITORING_ONLY_FIELDS: tuple[str, ...] = ("NAME_FAMILY_STATUS",)
+
+# Deliberately no longer a function of CATEGORICAL_FEATURES alone. Two fields are
+# accepted without being modelled: DAYS_BIRTH, consumed only to derive
+# employed_to_age, and everything in MONITORING_ONLY_FIELDS.
 REQUEST_FIELDS: tuple[str, ...] = (
-    NUMERIC_FEATURES + BINARY_FEATURES + CATEGORICAL_FEATURES + ("DAYS_BIRTH",)
+    NUMERIC_FEATURES
+    + BINARY_FEATURES
+    + CATEGORICAL_FEATURES
+    + ("DAYS_BIRTH",)
+    + MONITORING_ONLY_FIELDS
 )
 
 # Home Credit encodes "not employed" as this positive sentinel in DAYS_EMPLOYED.

@@ -4,8 +4,8 @@ from pathlib import Path
 from creditboost import config
 
 
-def test_feature_order_has_exactly_21_entries():
-    assert len(config.FEATURE_ORDER) == 21
+def test_feature_order_has_exactly_20_entries():
+    assert len(config.FEATURE_ORDER) == 20
 
 
 def test_request_fields_has_exactly_19_entries():
@@ -61,3 +61,39 @@ def test_model_dir_honours_the_environment_override(monkeypatch):
     finally:
         monkeypatch.delenv("CREDITBOOST_MODEL_DIR")
         importlib.reload(config)
+
+
+def test_protected_attributes_are_never_model_features():
+    """ECOA / Regulation B, 15 U.S.C. 1691(a)(1): race, color, religion, national
+    origin, sex or marital status, or age. This is the general form of the rule
+    the codebase previously stated only for CODE_GENDER and raw DAYS_BIRTH."""
+    overlap = set(config.PROTECTED_ATTRIBUTES) & set(config.FEATURE_ORDER)
+    assert not overlap, f"protected attribute(s) used as model features: {sorted(overlap)}"
+
+
+def test_marital_status_is_accepted_but_never_modelled():
+    """Collected so fair-lending monitoring stays possible -- Reg B 1002.13
+    requires exactly this for dwelling-secured credit -- and never scored on."""
+    assert "NAME_FAMILY_STATUS" in config.REQUEST_FIELDS
+    assert "NAME_FAMILY_STATUS" not in config.FEATURE_ORDER
+    assert "NAME_FAMILY_STATUS" not in config.CATEGORICAL_LEVELS
+
+
+def test_monitoring_only_fields_are_all_protected_attributes():
+    """A field accepted but not modelled needs a reason to exist. The only
+    sanctioned reason is that it is a protected attribute kept for monitoring."""
+    for name in config.MONITORING_ONLY_FIELDS:
+        assert name in config.PROTECTED_ATTRIBUTES
+
+
+def test_request_fields_is_the_concatenation_of_its_parts():
+    """REQUEST_FIELDS deliberately no longer tracks CATEGORICAL_FEATURES alone:
+    a field can be accepted without being modelled."""
+    expected = (
+        config.NUMERIC_FEATURES
+        + config.BINARY_FEATURES
+        + config.CATEGORICAL_FEATURES
+        + ("DAYS_BIRTH",)
+        + config.MONITORING_ONLY_FIELDS
+    )
+    assert config.REQUEST_FIELDS == expected
