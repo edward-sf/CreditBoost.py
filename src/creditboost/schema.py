@@ -47,6 +47,19 @@ class PredictRequest(BaseModel):
     OCCUPATION_TYPE: str | None = None
 
 
+class Reason(BaseModel):
+    """One principal factor increasing an applicant's risk.
+
+    `code` is stable and machine-readable; `description` is the plain-language
+    text a creditor can put in front of an applicant. Contribution magnitudes are
+    deliberately not exposed: they are meaningless to an applicant and would make
+    the model straightforward to reverse-engineer.
+    """
+
+    code: str
+    description: str
+
+
 class PredictResponse(BaseModel):
     # 'model_' is a protected Pydantic namespace; disabling it lets us name the
     # field model_version, which is what the field actually is.
