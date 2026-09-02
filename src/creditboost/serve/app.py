@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from .. import config
 from ..banding import risk_band
 from ..features import transform
+from ..reasons import principal_reasons
 from ..schema import PredictRequest, PredictResponse
 from . import deps
 from .logging_config import configure_logging
@@ -73,9 +74,36 @@ def create_app(
         started = time.perf_counter()
         model = deps.get_model()
 
-        matrix = xgb.DMatrix(transform([request.model_dump()]), enable_categorical=True)
+        # The frame is kept rather than inlined into DMatrix: its NaN mask is how
+        # a reason knows whether to say a value was unfavourable or absent, and
+        # post-transform is the right notion -- the DAYS_EMPLOYED sentinel has
+        # already been scrubbed to NaN by this point.
+        frame = transform([request.model_dump()])
+        matrix = xgb.DMatrix(frame, enable_categorical=True)
+
         probability = float(model.booster.predict(matrix)[0])
+
+        # A second call rather than deriving the probability from the contribution
+        # sum. One call would be cheaper, but it makes the service's primary
+        # output a byproduct of the explanation path, where a numeric drift would
+        # land on the number that matters most.
+        contribution_row = model.booster.predict(matrix, pred_contribs=True)[0]
+        if len(contribution_row) != len(config.FEATURE_ORDER) + 1:
+            raise RuntimeError(
+                f"pred_contribs returned {len(contribution_row)} values for "
+                f"{len(config.FEATURE_ORDER)} features; expected one per feature "
+                "plus a bias term. Refusing to derive reasons from a misread row."
+            )
+
+        contributions = {
+            name: float(value)
+            for name, value in zip(config.FEATURE_ORDER, contribution_row[:-1], strict=True)
+        }
+        # str(name): pandas types index labels as Hashable, not str.
+        missing = {str(name): bool(value) for name, value in frame.isna().iloc[0].items()}
+
         band = risk_band(probability)
+        reasons = principal_reasons(contributions, missing)
 
         # Deliberately logs no applicant financial fields: that is exactly the
         # PII that should not accumulate in log aggregation.
@@ -92,6 +120,7 @@ def create_app(
             probability=probability,
             risk_band=band,
             model_version=model.metadata.version,
+            reasons=reasons,
         )
 
     return application

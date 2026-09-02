@@ -18,6 +18,22 @@ from creditboost import config
 N_ROWS = 200
 OUTPUT = Path(__file__).parent / "sample.csv"
 
+# Fields accepted from callers but never modelled -- config.MONITORING_ONLY_FIELDS.
+# Their levels live here rather than in config.CATEGORICAL_LEVELS, because that dict
+# drives the transform: anything in it becomes a model feature. A real application
+# row carries marital status, so the fixture carries it too, and later fair-lending
+# analysis has an attribute to slice by.
+MONITORING_ONLY_LEVELS: dict[str, tuple[str, ...]] = {
+    "NAME_FAMILY_STATUS": (
+        "Single / not married",
+        "Married",
+        "Civil marriage",
+        "Widow",
+        "Separated",
+        "Unknown",
+    ),
+}
+
 
 def build_fixture() -> pd.DataFrame:
     rng = np.random.default_rng(config.RANDOM_SEED)
@@ -64,6 +80,14 @@ def build_fixture() -> pd.DataFrame:
         + rng.normal(0, 0.35, size=N_ROWS)
     )
     frame[config.TARGET_COLUMN] = (risk > np.quantile(risk, 0.92)).astype(int)
+
+    # Generated separately from CATEGORICAL_LEVELS because that dict drives the
+    # transform. Note the fixture's values shifted when NAME_FAMILY_STATUS left
+    # that dict: one fewer rng.choice runs before the draws below it, moving the
+    # whole stream. Only the values moved -- the column set is unchanged, and
+    # every property the fixture is asserted on still holds.
+    for column, levels in MONITORING_ONLY_LEVELS.items():
+        frame[column] = rng.choice(list(levels), size=N_ROWS)
 
     return frame[list(config.REQUEST_FIELDS) + [config.TARGET_COLUMN]]
 

@@ -9,7 +9,8 @@ checksum-pinned XGBoost artifact and returns a default probability, a risk band 
 Milestone 1 built a deliberately minimal, complete path through all three subsystems —
 training, a served model, and CI/CD — for a fixed 21-feature model trained on the Home
 Credit Default Risk dataset. Milestone 2 moved the model's bytes out of git into a GitHub
-Release, leaving a checksum-pinned `models/model.lock.json` in their place. See [`CLAUDE.md`](CLAUDE.md) for the architecture, invariants,
+Release, leaving a checksum-pinned `models/model.lock.json` in their place. Milestone 3
+added adverse action reason codes, and removed marital status as a model feature. See [`CLAUDE.md`](CLAUDE.md) for the architecture, invariants,
 and roadmap; see the design spec and implementation plan under `docs/superpowers/` for the
 full reasoning.
 
@@ -115,8 +116,28 @@ curl -X POST http://localhost:8000/predict \
 ```
 
 ```json
-{"probability": 0.1582, "risk_band": "medium", "model_version": "0.1.0"}
+{
+  "probability": 0.1266,
+  "risk_band": "medium",
+  "model_version": "0.2.0",
+  "reasons": [
+    {"code": "EMPLOYMENT_PROFILE", "description": "Employment details were not provided"},
+    {"code": "HOUSEHOLD_SIZE", "description": "Household size was not provided"},
+    {"code": "LOAN_SIZE", "description": "Loan amount is high relative to income"},
+    {"code": "ASSETS", "description": "No asset ownership information was provided"}
+  ]
+}
 ```
+
+`reasons` lists the principal factors increasing this applicant's risk, most significant
+first, at most four. Where a caller takes adverse action on the score, these are the
+specific principal reasons ECOA / Regulation B §1002.9 requires. Only factors that pushed
+the score upward appear — a feature that helped the applicant is not a reason for denial —
+and the wording distinguishes data that was *unfavourable* from data that was *absent*,
+which for a thin-file borrower is the difference between a true statement and a false one.
+
+Protected attributes never appear: sex is not accepted at all, and age and marital status
+are accepted but never scored on, so no reason can name them.
 
 `CODE_GENDER` is never accepted, and raw `DAYS_BIRTH` never reaches the model directly —
 under ECOA / Regulation B, sex and age are prohibited bases for a US credit decision. Age
@@ -135,6 +156,7 @@ src/creditboost/
   banding.py            # probability -> risk band
   data.py                # dataset loading, validation, train/valid split (train-only)
   artifact.py            # save/load + the train/serve skew gate
+  reasons.py             # contributions -> at most four adverse action reasons
   hashing.py             # file_sha256, dependency-free so both sides can import it
   lockfile.py            # the ModelLock pointer: release tag + a sha256 per asset
   artifact_cli.py        # creditboost-artifact: fetch / verify / lock

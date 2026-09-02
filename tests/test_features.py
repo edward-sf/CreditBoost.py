@@ -39,6 +39,12 @@ def test_raw_age_is_not_in_the_output():
     assert "DAYS_BIRTH" not in transform([base_record()]).columns
 
 
+def test_marital_status_is_not_in_the_output():
+    """base_record() still supplies NAME_FAMILY_STATUS, exactly as a real caller
+    may. The transform must ignore it: accepted is not the same as modelled."""
+    assert "NAME_FAMILY_STATUS" not in transform([base_record()]).columns
+
+
 def test_not_employed_sentinel_becomes_nan():
     record = base_record() | {"DAYS_EMPLOYED": config.DAYS_EMPLOYED_SENTINEL}
     assert np.isnan(transform([record])["DAYS_EMPLOYED"].iloc[0])
