@@ -372,3 +372,66 @@ def test_fetch_via_the_cli_returns_zero(tmp_path: Path, asset_server) -> None:
     destination = tmp_path / "downloaded"
     assert main(["fetch", "--dir", str(destination), "--lockfile", str(lock_path)]) == 0
     assert (destination / lockfile.MODEL_FILENAME).exists()
+
+
+def test_lock_writes_a_lockfile_matching_the_local_artifact(tmp_path: Path) -> None:
+    from creditboost.hashing import file_sha256
+
+    directory = tmp_path / "models"
+    make_artifact(directory)
+    lock_path = tmp_path / "model.lock.json"
+
+    exit_code = main(
+        ["lock", "--tag", "model-v0.1.0", "--dir", str(directory), "--lockfile", str(lock_path)]
+    )
+
+    assert exit_code == 0
+    written = lockfile.read(lock_path)
+    assert written.release_tag == "model-v0.1.0"
+    assert written.model_sha256 == file_sha256(directory / lockfile.MODEL_FILENAME)
+
+
+def test_a_freshly_locked_artifact_verifies_immediately(tmp_path: Path) -> None:
+    """lock then verify is the round trip the release script depends on; if it
+    does not hold, every release is born broken."""
+    directory = tmp_path / "models"
+    make_artifact(directory)
+    lock_path = tmp_path / "model.lock.json"
+
+    assert (
+        main(
+            [
+                "lock",
+                "--tag",
+                "model-v0.1.0",
+                "--dir",
+                str(directory),
+                "--lockfile",
+                str(lock_path),
+            ]
+        )
+        == 0
+    )
+    assert main(["verify", "--dir", str(directory), "--lockfile", str(lock_path)]) == 0
+
+
+def test_lock_honours_an_explicit_asset_base_url(tmp_path: Path) -> None:
+    directory = tmp_path / "models"
+    make_artifact(directory)
+    lock_path = tmp_path / "model.lock.json"
+
+    main(
+        [
+            "lock",
+            "--tag",
+            "model-v0.1.0",
+            "--dir",
+            str(directory),
+            "--lockfile",
+            str(lock_path),
+            "--asset-base-url",
+            "https://example.test/dl",
+        ]
+    )
+
+    assert lockfile.read(lock_path).asset_base_url == "https://example.test/dl"

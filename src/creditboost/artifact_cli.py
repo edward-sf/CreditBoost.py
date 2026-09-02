@@ -181,6 +181,11 @@ def main(argv: list[str] | None = None) -> int:
         help="permit a fixture-provenance artifact; never use for a published image",
     )
 
+    lock_parser = subparsers.add_parser("lock", help="write a lockfile for a local artifact")
+    _add_common(lock_parser)
+    lock_parser.add_argument("--tag", required=True, help="release tag, e.g. model-v0.1.0")
+    lock_parser.add_argument("--asset-base-url", default=lockfile.DEFAULT_ASSET_BASE_URL)
+
     args = parser.parse_args(argv)
     directory = args.directory if args.directory is not None else config.MODEL_DIR
     lock_path = args.lockfile if args.lockfile is not None else config.LOCKFILE_PATH
@@ -194,6 +199,15 @@ def main(argv: list[str] | None = None) -> int:
             lock = lockfile.read(lock_path)
             verify_artifact(directory, lock, allow_fixture=args.allow_fixture)
             print(f"artifact in {directory} verified against {lock.release_tag}")
+        elif args.command == "lock":
+            written = lockfile.write(
+                lock_path,
+                release_tag=args.tag,
+                model_path=directory / MODEL_FILENAME,
+                metadata_path=directory / METADATA_FILENAME,
+                asset_base_url=args.asset_base_url,
+            )
+            print(f"wrote {lock_path} for {written.release_tag}")
     except (ArtifactError, FileNotFoundError, ValueError) as err:
         print(f"{type(err).__name__}: {err}", file=sys.stderr)
         return 1
