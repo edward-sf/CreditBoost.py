@@ -49,3 +49,19 @@ def test_generator_is_deterministic():
     first = build_fixture()
     second = build_fixture()
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_fixture_has_every_fairness_attribute(frame):
+    """CODE_GENDER is not a request field -- the service never accepts it -- but
+    fairness measurement needs it, so the fixture carries it anyway."""
+    for column in config.FAIRNESS_ATTRIBUTES:
+        assert column in frame.columns
+
+
+def test_fixture_gender_groups_are_both_large_enough_to_measure(frame):
+    """A 200-row fixture split evenly gives 100 per group, which is exactly the
+    default minimum. Drawing it randomly could land at 95/105 and make the
+    integration test flaky, so the split is deterministic."""
+    counts = frame["CODE_GENDER"].value_counts()
+    assert set(counts.index) == {"F", "M"}
+    assert counts.min() == 100

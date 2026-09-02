@@ -34,6 +34,12 @@ MONITORING_ONLY_LEVELS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Analysis-only columns: present in training data so outcomes can be measured
+# across groups, never accepted from a caller, never a model feature. This is a
+# third category, distinct from model features and from monitoring-only request
+# fields, and CODE_GENDER is its first member.
+ANALYSIS_ONLY_FIELDS: tuple[str, ...] = ("CODE_GENDER",)
+
 
 def build_fixture() -> pd.DataFrame:
     rng = np.random.default_rng(config.RANDOM_SEED)
@@ -89,7 +95,15 @@ def build_fixture() -> pd.DataFrame:
     for column, levels in MONITORING_ONLY_LEVELS.items():
         frame[column] = rng.choice(list(levels), size=N_ROWS)
 
-    return frame[list(config.REQUEST_FIELDS) + [config.TARGET_COLUMN]]
+    # Deterministic and exactly balanced rather than drawn: 200 rows split evenly
+    # gives 100 per group, exactly the default minimum group size, so a random
+    # draw landing at 95/105 would make fairness measurement on the fixture
+    # flaky. Alternating by index also consumes no rng, so no existing column
+    # shifts position in the stream.
+    frame["CODE_GENDER"] = np.where(np.arange(N_ROWS) % 2 == 0, "F", "M")
+
+    analysis_only = [c for c in ANALYSIS_ONLY_FIELDS if c not in config.REQUEST_FIELDS]
+    return frame[list(config.REQUEST_FIELDS) + analysis_only + [config.TARGET_COLUMN]]
 
 
 if __name__ == "__main__":
