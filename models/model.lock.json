@@ -1,7 +1,7 @@
 {
-  "release_tag": "model-v0.1.0",
+  "release_tag": "model-v0.2.0",
   "asset_base_url": "https://github.com/edward-sf/CreditBoost.py/releases/download",
-  "model_sha256": "97869896fdb65eacd86b901438adbc2d11d52cc96baad715f9081b703450e4ac",
-  "metadata_sha256": "0df0975d33efe7d66386c5a0ed349600e79ebec85eb4b2f9218c6e806c6d4b7d",
-  "released_at": "2026-09-02T20:36:15.803863+00:00"
+  "model_sha256": "019cb131392e474749343c264ccd44fae072c499d90fe700e79ed5ed7f0afeda",
+  "metadata_sha256": "69fd1c4b548364603bba42fe7eb007052eeed0cd159ff8ade09c07c9e2d2d3e7",
+  "released_at": "2026-09-02T22:24:41.781111+00:00"
 }
