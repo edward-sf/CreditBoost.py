@@ -44,6 +44,8 @@ tables, batch prediction, authentication, and automated retraining.
 | Version pin | A committed `models/model.lock.json` with tag + sha256 per asset | A model bump becomes a reviewable three-line diff; integrity is verified rather than assumed; `config.py` stays about features |
 | Shipped-artifact guard | `creditboost-artifact verify`, run inside the Docker build | Structural — an image containing a bad artifact cannot be built, on any machine, not merely one that runs pytest |
 | Release creation | `scripts/release-model.sh`, invoked manually after training | Keeps `train.py` offline, dependency-free, and hermetically testable |
+| Dependency rule | An `import-linter` contract in `pyproject.toml`, run in CI | The rule is static, so a static check suits it: it sees the whole import graph, catches transitive and guarded imports, and reports the offending chain. Replaces a hand-rolled `sys.modules` test that could not be linted and covered one module instead of seven |
+| Pre-publish signal | `scripts/smoke.sh` asserts `/health` reports `provenance: production` | The last gate before the GHCR push, asserted against the running container rather than bytes on disk |
 | Git history | Delete from `HEAD`; do **not** rewrite history | The problem is future retrains appending copies, which deleting from `HEAD` solves completely; rewriting a public repo's merged history is disruptive out of proportion to reclaiming 1.2MB once |
 
 ## Architecture
@@ -69,10 +71,19 @@ scripts/release-model.sh 0.2.0                                    artifact fetch
 
 ### What this deliberately does not touch
 
-- **Dependency direction.** `artifact_cli` imports `artifact`, `config`, `schema`, and
-  `lockfile` — exactly the set `serve/` already imports. It runs in the builder stage,
-  which has only the base package installed. scikit-learn stays out of the runtime image
-  and the existing subprocess test that enforces this keeps passing unmodified.
+- **Dependency direction.** `artifact_cli` imports `artifact`, `config`, `schema`,
+  `lockfile`, and `hashing` — exactly the set `serve/` already imports. It runs in the
+  builder stage, which has only the base package installed, so this is not merely a
+  layering preference: `data.py` imports scikit-learn at module scope, and importing it
+  there would crash the build outright.
+
+  The rule's enforcement is upgraded as part of this milestone. Milestone 1 checked it
+  with a subprocess test inspecting `sys.modules`, which is a dynamic proxy for a static
+  property, could not be linted or type-checked because the probe was a Python string, and
+  covered `serve/` alone. It is replaced by an `import-linter` contract in
+  `pyproject.toml`, run by `lint-imports` in CI, which analyses the real import graph:
+  it covers every runtime-side module, catches transitive and guarded imports, and prints
+  the offending chain. Every new module joins the contract in the task that creates it.
 - **The boot-time skew gate.** `artifact.load()` still runs in the FastAPI lifespan
   handler and still exits the process non-zero on mismatch. No new code runs at startup.
 - **`config.py`.** It does not learn about releases. `MODEL_VERSION` stays where it is and
@@ -230,6 +241,9 @@ failure by thirty seconds.
   artifact. This is structural — `docker build` fails — not a test that can be skipped.
 - `models/model.lock.json` and `config.MODEL_VERSION` move in the same commit; `verify`
   enforces it.
+- The one-way dependency rule becomes a declarative contract checked in CI, covering every
+  runtime-side module rather than `serve/` alone.
+- The smoke test asserts the running container's provenance, at the gate before publish.
 
 ### Amended
 
@@ -329,11 +343,27 @@ guarantees `FEATURE_ORDER` contains neither `CODE_GENDER` nor raw `DAYS_BIRTH`. 
 deleted test was defence in depth against the shipped bytes, and `verify` provides that
 defence in a stronger form.
 
+### Replaced
+
+`tests/test_api.py`'s `test_serving_does_not_import_the_training_stack` is deleted in
+favour of the `import-linter` contract described under Architecture. The rule it guarded
+is not relaxed — it is enforced more widely, more statically, and with better diagnostics.
+
+### Strengthened
+
+`scripts/smoke.sh` gains an assertion that `/health` reports
+`provenance: "production"`. It already runs against the live container in CI's `build`
+job, which gates the GHCR push, but checked only status, risk band, model version presence
+and the probability range. This closes the loop end to end: the *running* container, built
+from the release, is serving a production model. The expected value is overridable via
+`EXPECT_PROVENANCE` so a local fixture build can still be smoke-tested, and defaults to
+the strict value so CI needs no configuration.
+
 ### Unchanged and still passing
 
-The subprocess test asserting scikit-learn is never imported by `serve/`; every
-`features.py` train/serve parity test; and `tests/test_api.py`, which already trains its
-own fixture artifact into a temporary directory and never depended on `models/` at all.
+Every `features.py` train/serve parity test; and `tests/test_api.py`, which already trains
+its own fixture artifact into a temporary directory and never depended on `models/` at
+all.
 
 ## Sequencing Constraint
 
@@ -360,3 +390,7 @@ committed artifact last.
 7. CI is green end to end on a PR and publishes to GHCR on merge to `main`.
 8. `scripts/release-model.sh` takes a version argument, creates the release, uploads both
    assets, and rewrites the lockfile.
+9. `lint-imports` reports the contract kept, and reports it broken with exit code 1 when a
+   forbidden import — including a guarded one — is introduced.
+10. `scripts/smoke.sh` fails when the running container reports a non-production
+    provenance.

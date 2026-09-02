@@ -21,10 +21,11 @@ Every task's requirements implicitly include this section.
   (`pip install .`, never `.[train]` — sklearn is in the `train` extra). Importing either
   would crash the build, not merely offend the layering. The CLI may import only
   `artifact`, `config`, `schema`, `banding`, `lockfile`, and `hashing`.
-- **Test that rule by naming those two modules — never by asserting
-  `'sklearn' not in sys.modules`.** The proxy check fails on *correct* code: xgboost
-  imports sklearn itself whenever sklearn is installed, which it is in a `[train,dev]`
-  dev venv. `tests/test_api.py:186-200` documents this trap and shows the right idiom.
+- **That rule is enforced by the `[tool.importlinter]` contract in `pyproject.toml`**
+  (added in Task 1), run via `lint-imports` locally and in CI. Every new runtime-side
+  module is added to its `source_modules` in the task that creates it. Do **not** write a
+  per-module test asserting `'sklearn' not in sys.modules`: that check fails on *correct*
+  code, because xgboost imports sklearn itself whenever sklearn is installed.
 - **`pytest` must stay fully hermetic and offline.** No test may touch the network. Loopback `http.server` is fine.
 - **`ruff` line-length is 100**, lint rules `["E", "F", "I", "UP", "B"]`. Run `ruff check . && ruff format --check .` before every commit; CI enforces formatting.
 - **`mypy src/` must pass.**
@@ -48,33 +49,40 @@ Every task's requirements implicitly include this section.
 | `models/model.lock.json` | **Create.** The committed pointer. |
 | `scripts/release-model.sh` | **Create.** `gh release create` + upload + `creditboost-artifact lock`. |
 | `Dockerfile` | **Modify.** Builder fetches and verifies; runtime copies from builder. |
-| `.github/workflows/ci.yml` | **Modify.** Read the model version from `config`, not the deleted metadata file. |
+| `.github/workflows/ci.yml` | **Modify.** Read the model version from `config`, not the deleted metadata file; run `lint-imports`. |
 | `.gitignore`, `.dockerignore` | **Modify.** Ignore `models/*.json`, except the lockfile. |
-| `pyproject.toml` | **Modify.** Register the console script. |
+| `pyproject.toml` | **Modify.** Register the console script; add `import-linter` to the `dev` extra and the `[tool.importlinter]` architecture contract. |
 | `tests/test_hashing.py`, `tests/test_lockfile.py`, `tests/test_artifact_cli.py` | **Create.** |
 | `tests/test_train.py` | **Modify.** Remove the two committed-artifact tests. |
+| `tests/test_api.py` | **Modify.** Remove `test_serving_does_not_import_the_training_stack`, superseded by the contract. |
+| `scripts/smoke.sh` | **Modify.** Assert `/health` reports `provenance: production`. |
 | `CLAUDE.md`, `README.md` | **Modify.** Invariant ledger and workflow docs. |
 
 ---
 
-### Task 1: Extract `file_sha256` into a dependency-free module
+### Task 1: Extract `file_sha256` and enforce the dependency rule with an architecture contract
 
-`file_sha256` currently lives in `data.py`, which imports scikit-learn. The new CLI runs in the Docker builder stage, where scikit-learn is **not installed**, so it cannot import `data.py` at all. This task moves the function somewhere both sides can reach. It is a pure refactor: no behaviour changes.
+Two halves of one concern: the runtime/training module boundary.
+
+`file_sha256` currently lives in `data.py`, which imports scikit-learn at module scope. The new CLI runs in the Docker builder stage, where scikit-learn is **not installed** (it is in the `train` extra), so it cannot import `data.py` at all. This task moves the function somewhere both sides can reach — a pure refactor, no behaviour change — and replaces the hand-rolled dependency-direction test with a declarative contract.
 
 **Files:**
 - Create: `src/creditboost/hashing.py`
 - Modify: `src/creditboost/data.py:5` (drop the now-unused `hashlib` import), `src/creditboost/data.py:18-24` (remove the function definition)
+- Modify: `pyproject.toml` (add `import-linter` to the `dev` extra; add the contract)
+- Modify: `tests/test_api.py:185-207` (delete `test_serving_does_not_import_the_training_stack`)
 - Test: `tests/test_hashing.py`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `creditboost.hashing.file_sha256(path: Path) -> str`. Tasks 2, 3 and 5 depend on this exact name and signature. `creditboost.data.file_sha256` remains importable as a re-export so `train.py` needs no change.
+- Produces: `creditboost.hashing.file_sha256(path: Path) -> str`. Tasks 2, 3 and 5 depend on this exact name and signature. `creditboost.data.file_sha256` remains importable as a re-export so `train.py:23` needs no change. Also produces the `[tool.importlinter]` contract that Tasks 2 and 3 each extend by one line.
 
 - [ ] **Step 1: Write the failing test**
 
 Create `tests/test_hashing.py`:
 
 ```python
+import hashlib
 from pathlib import Path
 
 from creditboost.hashing import file_sha256
@@ -94,37 +102,13 @@ def test_file_sha256_reads_in_chunks_so_a_file_larger_than_the_buffer_still_hash
 ) -> None:
     """The implementation reads 1MB at a time; a file spanning several chunks
     must hash identically to hashing the whole payload at once."""
-    import hashlib
-
     payload = b"x" * (1024 * 1024 * 3 + 17)
     target = tmp_path / "big.bin"
     target.write_bytes(payload)
     assert file_sha256(target) == hashlib.sha256(payload).hexdigest()
-
-
-def test_hashing_module_does_not_reach_the_training_modules() -> None:
-    """hashing.py exists precisely so the Docker builder stage -- which installs
-    the base package only -- can hash files.
-
-    This names creditboost.data and creditboost.train rather than checking for
-    sklearn, following the idiom tests/test_api.py:186-200 established and
-    explained: sklearn's presence depends on installed extras AND on xgboost's
-    own unrelated optional sklearn integration, so a proxy check on sklearn is
-    both false-positive and false-negative prone. Naming the forbidden modules
-    sidesteps both.
-    """
-    import subprocess
-    import sys
-
-    code = (
-        "import sys\n"
-        "import creditboost.hashing\n"
-        "forbidden = [m for m in ('creditboost.data', 'creditboost.train') if m in sys.modules]\n"
-        "assert not forbidden, f'hashing pulled in training module(s): {forbidden}'\n"
-    )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
 ```
+
+There is deliberately **no** test here asserting that `hashing` avoids the training modules. That rule is enforced by the contract added in Step 6, for every module at once, rather than by a per-module test.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -172,27 +156,100 @@ from .hashing import file_sha256
 __all__ = ["MissingColumnsError", "file_sha256", "load_training_frame", "split"]
 ```
 
-The `__all__` entry is what keeps `from .data import file_sha256` working in `train.py:22` without touching `train.py`. Do not remove that re-export.
+The `__all__` entry is what keeps `from .data import file_sha256` working in `train.py:23` without touching `train.py`, and it is also what stops ruff flagging the import as unused (`F401`). Do not remove that re-export.
 
 - [ ] **Step 5: Run the full suite to verify nothing regressed**
 
 Run: `pytest -v`
-Expected: PASS, including the pre-existing `tests/test_data.py` and `tests/test_train.py`. This is a refactor; a failure here means the re-export is wrong.
+Expected: PASS. This is a refactor; a failure here means the re-export is wrong.
 
-- [ ] **Step 6: Lint and type-check**
+- [ ] **Step 6: Add import-linter and the architecture contract**
 
-Run: `ruff check . && ruff format --check . && mypy src/`
-Expected: all clean.
+In `pyproject.toml`, add `"import-linter>=2.0"` to the `dev` extra, then append the contract at the end of the file:
 
-- [ ] **Step 7: Commit**
+```toml
+[tool.importlinter]
+root_package = "creditboost"
+
+[[tool.importlinter.contracts]]
+name = "Runtime and artifact tooling never reach training code"
+type = "forbidden"
+# This is the one-way dependency rule that keeps scikit-learn out of the
+# runtime image -- and, since the Docker builder stage installs the base
+# package only, it is also what stops the artifact CLI crashing at build time.
+# A static contract suits a static rule: it sees the whole import graph, so it
+# catches transitive and guarded imports alike, and reports the full chain.
+source_modules = [
+    "creditboost.serve",
+    "creditboost.artifact",
+    "creditboost.features",
+    "creditboost.schema",
+    "creditboost.banding",
+    "creditboost.config",
+    "creditboost.hashing",
+]
+forbidden_modules = [
+    "creditboost.data",
+    "creditboost.train",
+]
+```
+
+Then reinstall so the tool is available: `pip install -e ".[train,dev]"`
+
+- [ ] **Step 7: Run the contract**
+
+Run: `lint-imports`
+Expected: `Contracts: 1 kept, 0 broken.` and exit code 0.
+
+- [ ] **Step 8: Prove the contract actually catches a violation**
+
+A check that has never failed proves nothing. Inject the exact mistake the rule exists to prevent — a *guarded* import, the case a naive check would miss:
 
 ```bash
-git add src/creditboost/hashing.py src/creditboost/data.py tests/test_hashing.py
-git commit -m "refactor: extract file_sha256 into a dependency-free hashing module
+printf '\ntry:\n    from .data import split  # noqa: F401\nexcept ImportError:\n    pass\n' >> src/creditboost/banding.py
+lint-imports; echo "exit: $?"
+git checkout src/creditboost/banding.py
+```
+
+Expected: the contract is reported **BROKEN** with exit code 1, and the output traces the full chain, e.g.:
+
+```
+creditboost.serve is not allowed to import creditboost.data:
+-   creditboost.serve.app -> creditboost.banding (l.21)
+    creditboost.banding -> creditboost.data (l.27)
+```
+
+Then confirm `git status --short src/` is clean before continuing. Do not proceed until you have seen both the broken and the kept result.
+
+- [ ] **Step 9: Delete the hand-rolled test the contract replaces**
+
+Delete `test_serving_does_not_import_the_training_stack` from `tests/test_api.py` (lines 185-207, including its docstring).
+
+The contract supersedes it and is strictly better on every axis: it is static analysis of a static rule rather than `sys.modules` inspection as a proxy; it covers seven modules rather than one; it reports the transitive chain rather than just the fact of a violation; and it involves no stringified Python that ruff and mypy cannot see.
+
+Then remove imports left unused by the deletion — run `ruff check tests/test_api.py`, which will name them (`F401`). `subprocess` is likely now unused.
+
+- [ ] **Step 10: Run everything**
+
+Run: `pytest -v && lint-imports && ruff check . && ruff format --check . && mypy src/`
+Expected: all pass.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src/creditboost/hashing.py src/creditboost/data.py tests/test_hashing.py \
+        tests/test_api.py pyproject.toml
+git commit -m "refactor: extract file_sha256 and enforce layering with import-linter
 
 The artifact CLI runs in the Docker builder stage, which installs the base
-package only and therefore has no scikit-learn. data.py imports sklearn, so
-the hash helper had to move somewhere both sides can import."
+package only and therefore has no scikit-learn. data.py imports sklearn at
+module scope, so the hash helper had to move somewhere both sides can import.
+
+Replaces the hand-rolled sys.modules test with a declarative import-linter
+contract. The rule is static, so a static check suits it: the contract sees
+the whole import graph, catches transitive and guarded imports, reports the
+offending chain, and needs no stringified Python that ruff and mypy cannot
+see. It also covers seven modules where the test covered one."
 ```
 
 ---
@@ -476,10 +533,17 @@ Expected: PASS, all 10 tests.
 Run: `ruff check . && ruff format --check . && mypy src/`
 Expected: all clean. `mypy` in particular must not report an implicit `Optional`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Register the new module in the architecture contract**
+
+Add `"creditboost.lockfile"` to `source_modules` in `pyproject.toml`'s contract, then run `lint-imports`.
+Expected: `Contracts: 1 kept, 0 broken.`
+
+Every new runtime-side module joins the contract in the task that creates it; that is how the rule keeps covering the package as it grows.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/creditboost/lockfile.py src/creditboost/config.py tests/test_lockfile.py
+git add src/creditboost/lockfile.py src/creditboost/config.py tests/test_lockfile.py pyproject.toml
 git commit -m "feat: add the model lockfile model and reader
 
 Pins a release tag plus a sha256 per asset. No model_version field: the CLI
@@ -698,29 +762,11 @@ def test_verify_via_the_cli_returns_one_and_explains_on_failure(
     assert "fixture" in capsys.readouterr().err
 
 
-def test_the_cli_never_reaches_the_training_modules() -> None:
-    """artifact_cli runs in the Docker builder stage, which installs the base
-    package only -- scikit-learn is in the [train] extra and is absent there.
-    data.py imports sklearn at module scope, so an accidental import of it
-    would not merely be untidy: it would crash the build.
-
-    Do NOT rewrite this as `assert 'sklearn' not in sys.modules`. That check
-    FAILS even when the code is correct, because xgboost imports sklearn
-    itself whenever sklearn happens to be installed -- which it is in a
-    [train,dev] dev venv. tests/test_api.py:186-200 documents this trap; this
-    test follows the same idiom for the same reason.
-    """
-    import subprocess
-    import sys
-
-    code = (
-        "import sys\n"
-        "import creditboost.artifact_cli\n"
-        "forbidden = [m for m in ('creditboost.data', 'creditboost.train') if m in sys.modules]\n"
-        "assert not forbidden, f'artifact_cli pulled in training module(s): {forbidden}'\n"
-    )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+# The dependency rule for this module -- that it never reaches data.py or
+# train.py, which import scikit-learn and would crash the Docker builder --
+# is enforced by the import-linter contract, extended in Step 4 below. It is
+# deliberately NOT a test here: the rule is static, so a static contract that
+# sees the whole import graph beats per-module sys.modules inspection.
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -875,7 +921,14 @@ def main(argv: list[str] | None = None) -> int:
 
 Note the ordering deliberately puts the booster `feature_names` ECOA check *after* `load()`: `load()` already rejects any booster whose names differ from `FEATURE_ORDER`, so a `CODE_GENDER` booster raises there first with a `FeatureOrderMismatchError`. The explicit loop after it is defence in depth for the case where `load()`'s check is ever relaxed. Both raise the same type, so the test asserting `match="CODE_GENDER"` needs `load()`'s message to name the offending feature — it does, via `_first_disagreement`, which prints `artifact has 'CODE_GENDER'`.
 
-- [ ] **Step 4: Register the console script**
+- [ ] **Step 4: Extend the architecture contract to cover the new module**
+
+Add `"creditboost.artifact_cli"` to `source_modules` in `pyproject.toml`'s contract.
+
+Run: `lint-imports`
+Expected: `Contracts: 1 kept, 0 broken.` This is what guarantees the module can be imported in the Docker builder stage, where scikit-learn is absent.
+
+- [ ] **Step 5: Register the console script**
 
 In `pyproject.toml`, change the `[project.scripts]` block to:
 
@@ -887,22 +940,22 @@ creditboost-artifact = "creditboost.artifact_cli:main"
 
 Then reinstall so the entry point exists: `pip install -e ".[train,dev]"`
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `pytest tests/test_artifact_cli.py -v`
 Expected: PASS, all 13 tests. If `test_a_clean_sidecar_cannot_hide_a_dirty_booster` fails on the `match="CODE_GENDER"` assertion, check that `artifact.load()`'s message includes the artifact's own feature name — do not weaken the test to make it pass.
 
-- [ ] **Step 6: Verify the console script works end to end**
+- [ ] **Step 7: Verify the console script works end to end**
 
 Run: `creditboost-artifact verify --help`
 Expected: usage text listing `--dir`, `--lockfile`, and `--allow-fixture`.
 
-- [ ] **Step 7: Lint and type-check**
+- [ ] **Step 8: Lint and type-check**
 
 Run: `ruff check . && ruff format --check . && mypy src/`
 Expected: all clean.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/creditboost/artifact_cli.py tests/test_artifact_cli.py pyproject.toml
@@ -1588,7 +1641,34 @@ Do **not** ignore `models/model.lock.json` — the build copies it explicitly.
 Run: `docker build -t creditboost:m2 .`
 Expected: build succeeds. The log must show `fetched model-v0.1.0 into /build/models` and `artifact in /build/models verified against model-v0.1.0`.
 
-- [ ] **Step 5: Run and smoke-test it**
+- [ ] **Step 5: Strengthen the smoke test to assert provenance**
+
+`scripts/smoke.sh` runs against the live container in CI's `build` job, which gates the GHCR push — but it checks `"status":"ok"`, `risk_band`, `model_version` and the probability range, and never looks at `provenance`. That is the last place a fixture model could slip through unnoticed.
+
+In `scripts/smoke.sh`, replace this line:
+
+```bash
+grep -q '"status":"ok"' /tmp/health.json
+```
+
+with:
+
+```bash
+grep -q '"status":"ok"' /tmp/health.json
+
+# The image is built from a verified release, but this is the end-to-end
+# proof: the RUNNING container is serving a production model, asserted at the
+# exact gate before the image is published to GHCR.
+EXPECT_PROVENANCE="${EXPECT_PROVENANCE:-production}"
+if ! grep -q "\"provenance\":\"${EXPECT_PROVENANCE}\"" /tmp/health.json; then
+  echo "expected provenance \"${EXPECT_PROVENANCE}\" in /health, got: $(cat /tmp/health.json)" >&2
+  exit 1
+fi
+```
+
+`EXPECT_PROVENANCE` is overridable so a local fixture-built image can still be smoke-tested, but it defaults to the strict value, so CI gets the strict check without configuring anything.
+
+- [ ] **Step 6: Run and smoke-test it**
 
 ```bash
 docker run -d --rm --name cb-m2 -p 8000:8000 creditboost:m2
@@ -1599,7 +1679,7 @@ docker stop cb-m2
 
 Expected: the smoke test passes, and `/health` reports `"provenance":"production"` and `"model_version":"0.1.0"`.
 
-- [ ] **Step 6: Prove the guard actually fails the build**
+- [ ] **Step 7: Prove the guard actually fails the build**
 
 This is the task's real deliverable, so verify it rather than assuming it. Temporarily corrupt the lockfile:
 
@@ -1625,15 +1705,15 @@ docker build -t creditboost:m2 .
 
 Expected: success. Do not proceed until both halves behave as described.
 
-- [ ] **Step 7: Confirm the artifact is absent from the build context**
+- [ ] **Step 8: Confirm the artifact is absent from the build context**
 
 Run: `docker run --rm creditboost:m2 ls /app/models`
 Expected: `model.json`, `model_meta.json`, and `model.lock.json`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add Dockerfile .dockerignore
+git add Dockerfile .dockerignore scripts/smoke.sh
 git commit -m "feat: build the image from the pinned model release
 
 The builder stage fetches and verifies the release assets in a single RUN --
@@ -1671,19 +1751,33 @@ The `push` job currently reads `models/model_meta.json`, which Task 9 deletes. R
 
 The `push` job already has an `actions/setup-python@v5` step before this one, so `pip` is available.
 
-- [ ] **Step 2: Verify the YAML parses**
+- [ ] **Step 2: Run the architecture contract in CI**
+
+In the `lint` job, add `lint-imports` after the existing `mypy src/` step:
+
+```yaml
+      - run: mypy src/
+      # The one-way dependency rule that keeps scikit-learn out of the runtime
+      # image and lets the artifact CLI import cleanly in the Docker builder,
+      # where scikit-learn is absent.
+      - run: lint-imports
+```
+
+`import-linter` is in the `dev` extra, which the `lint` job already installs.
+
+- [ ] **Step 3: Verify the YAML parses**
 
 Run: `python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml')); print('ok')"`
 Expected: `ok`
 
 (If `pyyaml` is unavailable, run `pip install pyyaml` first — it is a dev-time check only, do not add it to `pyproject.toml`.)
 
-- [ ] **Step 3: Confirm the version expression matches locally**
+- [ ] **Step 4: Confirm the version expression matches locally**
 
 Run: `python -c "from creditboost import config; print(config.MODEL_VERSION)"`
 Expected: `0.1.0`, matching `models/model_meta.json`'s `version` field before it is deleted.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -1849,8 +1943,16 @@ Replace the CI bullet with the amended wording, and add the two new invariants:
   structural, not a test that can be skipped.
 - **`models/model.lock.json` and `config.MODEL_VERSION` move in the same commit.** `verify`
   enforces it, so `/health` cannot report a version the artifact does not have.
-- **Never delete a model release.** Every build pinned to it breaks, including old commits
-  that used to build. This is the accepted price of the artifact leaving git.
+- **Model releases are not meant to be deleted.** Deleting one breaks rebuilds of every
+  commit pinned to it. It is recoverable rather than fatal — CI publishes every image to
+  GHCR tagged by commit sha, so the image stays pullable and the artifact can be recovered
+  with `docker cp` from it, with the lockfile's digest proving the recovered bytes are
+  right — but the recovery is a chore, so don't.
+- **The one-way dependency rule is a contract, not a convention.** `[tool.importlinter]` in
+  `pyproject.toml` forbids `serve/`, `artifact_cli`, and the shared modules from reaching
+  `data.py` or `train.py`; CI runs `lint-imports`. This is what keeps scikit-learn out of
+  the runtime image and lets the artifact CLI import cleanly in the Docker builder, where
+  scikit-learn is absent.
 ```
 
 Also amend the "Repository state" section's claim that "a production-trained artifact is committed at `models/model.json`" to say the artifact is released and pinned by `models/model.lock.json`.
@@ -1912,4 +2014,5 @@ Verify each before considering the milestone done. Each maps to the spec's crite
 - [ ] 6. `docker build` fails with `ProvenanceError` when the release asset carries `provenance: "fixture"`. Covered by `tests/test_artifact_cli.py`; the Docker-level case is the same code path.
 - [ ] 7. CI is green end to end on a PR, and publishes to GHCR on merge to `main`.
 - [ ] 8. `scripts/release-model.sh 0.1.0` created the release, uploaded both assets, and rewrote the lockfile. (Task 6.)
-- [ ] 9. `ruff check . && ruff format --check . && mypy src/` all clean.
+- [ ] 9. `ruff check . && ruff format --check . && mypy src/ && lint-imports` all clean.
+- [ ] 10. `scripts/smoke.sh` fails if the running container reports a non-production provenance.
