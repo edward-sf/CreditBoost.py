@@ -141,3 +141,4 @@ class ModelMetadata(BaseModel):
     metrics: dict[str, float]
     xgboost_version: str
     provenance: Literal["fixture", "production"]
+    fairness: FairnessReport

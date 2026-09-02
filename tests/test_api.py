@@ -7,6 +7,7 @@ from creditboost.data import load_training_frame, split
 from creditboost.schema import ModelMetadata
 from creditboost.serve.app import create_app
 from creditboost.train import fit
+from tests.conftest import a_passing_fairness_report
 
 
 @pytest.fixture(scope="module")
@@ -31,6 +32,7 @@ def artifact_paths(fixture_path, tmp_path_factory):
             metrics=metrics,
             xgboost_version="test",
             provenance="fixture",
+            fairness=a_passing_fairness_report(),
         ),
         model_path,
         meta_path,
@@ -267,3 +269,14 @@ def test_contributions_plus_bias_reconstruct_the_predicted_probability(client):
     assert len(row) == len(config.FEATURE_ORDER) + 1
     reconstructed = 1.0 / (1.0 + math.exp(-float(row.sum())))
     assert reconstructed == pytest.approx(probability, abs=1e-6)
+
+
+def test_metadata_exposes_the_fairness_report(client):
+    """The endpoint dumps the whole ModelMetadata, so the report arrives with no
+    endpoint change. A service that gates on fairness should publish what it
+    measured; the block is aggregate group rates only, never applicant data."""
+    report = client.get("/metadata").json()["fairness"]
+
+    assert report["adverse_definition"] == "band != low"
+    assert report["band_low_max"] == config.RISK_BAND_LOW_MAX
+    assert "attributes" in report

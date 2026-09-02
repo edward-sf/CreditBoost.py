@@ -21,6 +21,7 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from . import config
 from .artifact import save
 from .data import file_sha256, load_training_frame, split
+from .fairness import evaluate, failing_attributes
 from .features import transform
 from .schema import ModelMetadata
 
@@ -115,6 +116,33 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # fit() does not return validation predictions, so they are recomputed here.
+    # One extra pass over the validation split is cheap next to changing fit()'s
+    # signature, which tests and callers depend on.
+    fairness = evaluate(valid_frame, booster.predict(_matrix(valid_frame)).tolist())
+    failures = failing_attributes(fairness)
+    if failures:
+        for attribute in failures:
+            logger.error(
+                "adverse impact ratio %.4f for %s is below the floor %.2f; no artifact written",
+                attribute.adverse_impact_ratio,
+                attribute.attribute,
+                config.MIN_ADVERSE_IMPACT_RATIO,
+            )
+            for group in attribute.groups:
+                logger.error(
+                    "    %s: adverse rate %.4f (n=%d)",
+                    group.group,
+                    group.adverse_rate,
+                    group.n,
+                )
+        return 1
+
+    logger.info(
+        "adverse impact ratios: %s",
+        {a.attribute: a.adverse_impact_ratio for a in fairness.attributes},
+    )
+
     metadata = ModelMetadata(
         version=config.MODEL_VERSION,
         trained_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -124,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         metrics=metrics,
         xgboost_version=xgb.__version__,
         provenance=args.provenance,
+        fairness=fairness,
     )
     save(booster, metadata, args.model_out, args.metadata_out)
     logger.info("wrote %s and %s", args.model_out, args.metadata_out)

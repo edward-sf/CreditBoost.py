@@ -17,6 +17,7 @@ from creditboost.artifact_cli import (
     verify_artifact,
 )
 from creditboost.schema import ModelMetadata
+from tests.conftest import a_passing_fairness_report
 
 
 def make_artifact(
@@ -53,6 +54,7 @@ def make_artifact(
         metrics={"roc_auc": 0.75, "pr_auc": 0.24, "brier": 0.07},
         xgboost_version=xgb.__version__,
         provenance=provenance,  # type: ignore[arg-type]
+        fairness=a_passing_fairness_report(),
     )
     metadata_path.write_text(metadata.model_dump_json(indent=2) + "\n")
     return model_path, metadata_path

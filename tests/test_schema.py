@@ -10,6 +10,7 @@ from creditboost.schema import (
     PredictRequest,
     PredictResponse,
 )
+from tests.conftest import a_passing_fairness_report
 
 
 def minimal_payload() -> dict:
@@ -88,6 +89,7 @@ def test_metadata_round_trips_through_json():
         metrics={"roc_auc": 0.75, "pr_auc": 0.24, "brier": 0.068},
         xgboost_version="2.1.0",
         provenance="fixture",
+        fairness=a_passing_fairness_report(),
     )
     assert ModelMetadata.model_validate_json(metadata.model_dump_json()) == metadata
 
@@ -103,6 +105,7 @@ def test_metadata_rejects_an_unknown_provenance():
             metrics={},
             xgboost_version="2.1.0",
             provenance="guesswork",
+            fairness=a_passing_fairness_report(),
         )
 
 
