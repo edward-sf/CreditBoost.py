@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Milestones 1 and 2 are implemented, tested, and merged.** The package lives under
+**Milestones 1, 2 and 3 are implemented and tested.** The package lives under
 `src/creditboost/`, tests under `tests/`, and the production-trained artifact lives in a
 GitHub Release pinned by `models/model.lock.json` — it is not committed.
 
@@ -36,9 +36,29 @@ copies, which deleting from `HEAD` solves.
 - Design spec: `docs/superpowers/specs/2026-09-01-creditboost-model-artifact-storage-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-09-01-creditboost-model-artifact-storage.md`
 
-**Nothing else is scheduled.** SHAP explanations, experiment tracking, the six auxiliary
-Home Credit tables, batch prediction, authentication, and automated retraining remain out
-of scope and unspecced.
+**Nothing else was scheduled at the time** — Milestone 3 below was chosen afterwards.
+Experiment tracking, the six auxiliary Home Credit tables, batch prediction, authentication,
+deployment, prediction persistence, disparate-impact measurement, and automated retraining
+remain out of scope and unspecced.
+
+**Milestone 3 — adverse action reason codes.** Done. `/predict` returns up to four
+plain-language reasons drawn from a curated catalog in `config.py`, ranked by summed
+XGBoost `pred_contribs` contributions grouped into ten concepts. No new runtime dependency.
+
+Writing the spec surfaced a defect in the Milestone 1 feature set: `NAME_FAMILY_STATUS` was
+a model feature, and marital status is an enumerated ECOA prohibited basis. It was removed
+and the model retrained as `model-v0.2.0`; the field is still accepted, under
+`MONITORING_ONLY_FIELDS`, so later disparate-impact work can measure it. The removal cost
+0.00023 AUC — 0.75307 against 0.75330.
+
+- Design spec: `docs/superpowers/specs/2026-09-02-creditboost-adverse-action-reason-codes-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-09-02-creditboost-adverse-action-reason-codes.md`
+
+**Known open question, deliberately deferred:** `NAME_INCOME_TYPE` carries `Maternity leave`
+(a sex proxy) and `Pensioner` (an age proxy) as levels, so an `employment_profile` reason can
+implicate a protected characteristic indirectly. Unlike marital status these are levels
+rather than a whole prohibited-basis feature, and dropping employment type would cost real
+signal. It belongs to disparate-impact measurement, which is unspecced.
 
 ## Architecture
 
@@ -74,11 +94,23 @@ OpenMP runtime, which isn't bundled: run `brew install libomp` before `pip insta
 These are easy to break silently and each has a test guarding it. Do not change one without
 understanding why it exists.
 
-- `FEATURE_ORDER` has exactly 21 entries; `REQUEST_FIELDS` has exactly 19.
-- **`CODE_GENDER` must never appear** in any feature list, request schema, or transform, and
-  **raw `DAYS_BIRTH` must never be a model feature.** Under ECOA / Regulation B, sex and age
-  are prohibited bases for credit decisions in the US. Age enters only through the
-  `employed_to_age` ratio.
+- `FEATURE_ORDER` has exactly 20 entries; `REQUEST_FIELDS` has exactly 19.
+- **No member of `config.PROTECTED_ATTRIBUTES` is ever a model feature.** ECOA,
+  15 U.S.C. §1691(a)(1), names the prohibited bases in one sentence: race, color, religion,
+  national origin, sex or marital status, or age. `CODE_GENDER` is never accepted at all;
+  `DAYS_BIRTH` and `NAME_FAMILY_STATUS` are accepted and never modelled. The rule is about
+  features, not reads — the transform still reads `DAYS_BIRTH` to derive `employed_to_age`,
+  which Regulation B allows in an empirically derived, statistically sound scoring system.
+  Marital status has no equivalent allowance, which is why it is not a feature.
+- **`MONITORING_ONLY_FIELDS` are accepted but never transformed.** Reg B §1002.13 requires
+  collecting certain protected attributes precisely so fair-lending monitoring is possible.
+  An attribute a service refuses to accept cannot be collected retroactively; a feature can
+  always be restored by retraining.
+- **`REASON_CONCEPTS` partitions `FEATURE_ORDER` exactly**, and **no reason text names or
+  implies age, sex, or marital status.** Both have tests. A disclosure that reintroduces a
+  protected basis in prose would undo the feature work it accompanies.
+- **At most four reasons, and only from positive contributions.** A feature that helped the
+  applicant is not a reason for denial.
 - The `DAYS_EMPLOYED == 365243` sentinel is scrubbed to NaN **before** derived ratios are
   computed. Left raw it becomes a ~1000-year tenure that reads as a plausible value.
 - **Missing values are never imputed.** NaN reaches XGBoost intact — for a thin-file
