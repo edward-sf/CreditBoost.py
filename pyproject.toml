@@ -31,10 +31,12 @@ dev = [
     "ruff>=0.7",
     "mypy>=1.13",
     "pandas-stubs",
+    "import-linter>=2.0",
 ]
 
 [project.scripts]
 creditboost-train = "creditboost.train:main"
+creditboost-artifact = "creditboost.artifact_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/creditboost"]
@@ -56,3 +58,28 @@ python_version = "3.12"
 ignore_missing_imports = true
 # No `packages` key: CI invokes `mypy src/`, and mypy rejects a path argument
 # when packages is also configured.
+
+[tool.importlinter]
+root_package = "creditboost"
+
+[[tool.importlinter.contracts]]
+name = "Runtime and artifact tooling never reach training code"
+type = "forbidden"
+# This is the one-way dependency rule that keeps scikit-learn out of the
+# runtime image -- and, since the Docker builder stage installs the base
+# package only, it is also what stops the artifact CLI crashing at build time.
+# A static contract suits a static rule: it sees the whole import graph, so it
+# catches transitive and guarded imports alike, and reports the full chain.
+source_modules = [
+    "creditboost.serve",
+    "creditboost.artifact",
+    "creditboost.features",
+    "creditboost.schema",
+    "creditboost.banding",
+    "creditboost.config",
+    "creditboost.hashing",
+]
+forbidden_modules = [
+    "creditboost.data",
+    "creditboost.train",
+]

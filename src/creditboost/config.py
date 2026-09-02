@@ -16,6 +16,7 @@ REPO_ROOT = PACKAGE_ROOT.parent.parent
 MODEL_DIR = Path(os.environ.get("CREDITBOOST_MODEL_DIR", REPO_ROOT / "models"))
 MODEL_PATH = MODEL_DIR / "model.json"
 METADATA_PATH = MODEL_DIR / "model_meta.json"
+LOCKFILE_PATH = MODEL_DIR / "model.lock.json"
 DEFAULT_DATA_PATH = REPO_ROOT / "data" / "application_train.csv"
 
 TARGET_COLUMN = "TARGET"

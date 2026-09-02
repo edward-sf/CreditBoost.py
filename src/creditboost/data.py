@@ -2,26 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from . import config
+from .hashing import file_sha256
+
+__all__ = ["MissingColumnsError", "file_sha256", "load_training_frame", "split"]
 
 
 class MissingColumnsError(ValueError):
     """The CSV lacks columns the transform requires."""
-
-
-def file_sha256(path: Path) -> str:
-    """Content hash, recorded in metadata so a model traces to its training data."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def load_training_frame(path: Path) -> pd.DataFrame:

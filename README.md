@@ -1,14 +1,15 @@
 # CreditBoost
 
-Loan-default risk scoring for thin-file borrowers. A FastAPI service loads a committed
-XGBoost artifact and returns a default probability, a risk band (`low` / `medium` /
+Loan-default risk scoring for thin-file borrowers. A FastAPI service loads a
+checksum-pinned XGBoost artifact and returns a default probability, a risk band (`low` / `medium` /
 `high`), and the model version for a loan applicant.
 
 **Domains:** `Lending`, `Risk Analytics`
 
-This is Milestone 1: a deliberately minimal, complete path through all three subsystems —
+Milestone 1 built a deliberately minimal, complete path through all three subsystems —
 training, a served model, and CI/CD — for a fixed 21-feature model trained on the Home
-Credit Default Risk dataset. See [`CLAUDE.md`](CLAUDE.md) for the architecture, invariants,
+Credit Default Risk dataset. Milestone 2 moved the model's bytes out of git into a GitHub
+Release, leaving a checksum-pinned `models/model.lock.json` in their place. See [`CLAUDE.md`](CLAUDE.md) for the architecture, invariants,
 and roadmap; see the design spec and implementation plan under `docs/superpowers/` for the
 full reasoning.
 
@@ -30,6 +31,10 @@ full reasoning.
   ```bash
   brew install libomp
   ```
+- A python.org macOS build ships an empty TLS trust store until you run its
+  `Install Certificates.command`; without it `creditboost-artifact fetch` fails with
+  `CERTIFICATE_VERIFY_FAILED`. Homebrew and Linux Pythons are unaffected, as is the
+  container build.
 
 ### Install and test
 
@@ -54,8 +59,17 @@ creditboost-train --data data/application_train.csv --provenance production
 ```
 
 This writes `models/model.json` and `models/model_meta.json`, refusing to write anything
-if validation ROC-AUC falls below the floor in `config.py`. A repo clone already ships with
-a committed, production-trained artifact, so this step is only needed to retrain.
+if validation ROC-AUC falls below the floor in `config.py`.
+
+Publish what training produced as a GitHub Release, and rewrite the lockfile that pins it:
+
+```bash
+./scripts/release-model.sh 0.2.0
+git add models/model.lock.json && git commit -m "chore: pin model model-v0.2.0"
+```
+
+The release tag's version must match `config.MODEL_VERSION`; the script refuses to publish
+a fixture artifact or a mismatched version before it calls `gh`.
 
 ### Run
 
@@ -65,9 +79,11 @@ docker run -d --rm -p 8000:8000 creditboost:dev
 ./scripts/smoke.sh http://localhost:8000
 ```
 
-Or run the API directly against the committed artifact, without Docker:
+Or run the API directly without Docker. A clone carries no artifact — only the lockfile —
+so fetch the pinned release first:
 
 ```bash
+creditboost-artifact fetch
 uvicorn creditboost.serve.app:app --port 8000
 ```
 
@@ -119,13 +135,16 @@ src/creditboost/
   banding.py            # probability -> risk band
   data.py                # dataset loading, validation, train/valid split (train-only)
   artifact.py            # save/load + the train/serve skew gate
+  hashing.py             # file_sha256, dependency-free so both sides can import it
+  lockfile.py            # the ModelLock pointer: release tag + a sha256 per asset
+  artifact_cli.py        # creditboost-artifact: fetch / verify / lock
   train.py                # training CLI (creditboost-train)
   serve/
     app.py                 # FastAPI app: /health, /metadata, /predict
     deps.py                 # process-wide loaded-model state
     logging_config.py        # structured JSON logging for the creditboost logger tree
 tests/                        # pytest, one module per src file, plus a synthetic fixture
-models/                        # committed artifact: model.json + model_meta.json
+models/                        # model.lock.json — pins the release the artifact is fetched from
 data/                           # gitignored; the real Kaggle CSV goes here
 docs/superpowers/                # design spec and implementation plan
 .github/workflows/ci.yml          # lint, test, build, smoke-test, publish to GHCR
@@ -138,6 +157,7 @@ ruff check . && ruff format --check .   # CI checks formatting; run before commi
 mypy src/
 ```
 
-CI never downloads from Kaggle — it runs only against a synthetic fixture (`tests/fixtures/sample.csv`)
-and the committed artifact, so it's hermetic and credential-free. Training against the real
-dataset is a manual, local step.
+CI never downloads from Kaggle — it runs against a synthetic fixture
+(`tests/fixtures/sample.csv`) and downloads exactly one external thing: the checksum-pinned
+public release asset the lockfile names, which needs no credentials. Training against the
+real dataset is a manual, local step.
