@@ -177,3 +177,93 @@ def test_prediction_logs_carry_no_applicant_financial_data(client):
     # would also pass if logging emitted nothing at all.
     for expected_key in ("request_id", "latency_ms", "model_version", "risk_band"):
         assert expected_key in record, f"expected {expected_key!r} in {record!r}"
+
+
+def test_predict_returns_at_most_four_reasons(client):
+    response = client.post("/predict", json=minimal_payload())
+
+    assert response.status_code == 200
+    reasons = response.json()["reasons"]
+    assert 0 <= len(reasons) <= 4
+
+
+def test_every_reason_has_a_code_and_a_description(client):
+    reasons = client.post("/predict", json=minimal_payload()).json()["reasons"]
+
+    catalog = {text.code for text in config.REASON_TEXT.values()}
+    for reason in reasons:
+        assert reason["code"] in catalog
+        assert reason["description"]
+
+
+def test_the_same_request_yields_the_same_reasons(client):
+    payload = minimal_payload()
+
+    first = client.post("/predict", json=payload).json()["reasons"]
+    second = client.post("/predict", json=payload).json()["reasons"]
+
+    assert first == second
+
+
+def test_an_applicant_with_no_external_scores_is_told_exactly_that(client):
+    """The thin-file case the service exists for. If external_credit ranks at
+    all, it must say no score is on file -- never that the score is low."""
+    # minimal_payload() carries the three required fields only, so all three
+    # external scores are already absent -- which is the thin-file case exactly.
+    reasons = client.post("/predict", json=minimal_payload()).json()["reasons"]
+
+    external = [r for r in reasons if r["code"] == "EXTERNAL_CREDIT"]
+    for reason in external:
+        assert reason["description"] == "No external credit score on file"
+
+
+def test_the_not_employed_sentinel_reads_as_no_employment_history(client):
+    """365243 is scrubbed to NaN by the transform, so an unemployed applicant
+    must never be told their employment is merely short."""
+    payload = minimal_payload() | {"DAYS_EMPLOYED": config.DAYS_EMPLOYED_SENTINEL}
+
+    reasons = client.post("/predict", json=payload).json()["reasons"]
+
+    employment = [r for r in reasons if r["code"] == "EMPLOYMENT_TENURE"]
+    for reason in employment:
+        assert reason["description"] == "No employment history on record"
+
+
+def test_marital_status_is_still_accepted_and_never_reported(client):
+    """Quarantine, end to end: the field is accepted without error and cannot
+    appear in any disclosure, because it is not a feature at all."""
+    payload = minimal_payload() | {"NAME_FAMILY_STATUS": "Widow"}
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 200
+    text = " ".join(r["description"] for r in response.json()["reasons"]).lower()
+    for term in ("marital", "widow", "married", "spouse"):
+        assert term not in text
+
+
+def test_contributions_plus_bias_reconstruct_the_predicted_probability(client):
+    """pred_contribs returns n_features + 1 values, bias last. An off-by-one in
+    that row produces reasons that are entirely plausible and entirely wrong --
+    a failure with no natural symptom, so it gets an explicit test.
+
+    Summing the whole row (contributions plus bias) gives the margin; the
+    logistic of that margin must equal the probability the service reports.
+    """
+    import math
+
+    import xgboost as xgb
+
+    from creditboost.features import transform
+    from creditboost.serve import deps
+
+    payload = minimal_payload()
+    probability = client.post("/predict", json=payload).json()["probability"]
+
+    frame = transform([payload])
+    matrix = xgb.DMatrix(frame, enable_categorical=True)
+    row = deps.get_model().booster.predict(matrix, pred_contribs=True)[0]
+
+    assert len(row) == len(config.FEATURE_ORDER) + 1
+    reconstructed = 1.0 / (1.0 + math.exp(-float(row.sum())))
+    assert reconstructed == pytest.approx(probability, abs=1e-6)

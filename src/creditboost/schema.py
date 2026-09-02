@@ -68,6 +68,15 @@ class PredictResponse(BaseModel):
     probability: float = Field(ge=0, le=1)
     risk_band: RiskBand
     model_version: str
+    reasons: list[Reason] = Field(
+        default_factory=list,
+        description=(
+            "Principal factors increasing this applicant's risk, most significant "
+            "first, at most four. Where a caller takes adverse action on this "
+            "score, these are the specific principal reasons ECOA / Regulation B "
+            "1002.9 requires. Empty when no factor pushed the score upward."
+        ),
+    )
 
 
 class ModelMetadata(BaseModel):
