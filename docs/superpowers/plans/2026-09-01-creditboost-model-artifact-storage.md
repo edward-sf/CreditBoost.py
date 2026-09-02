@@ -16,7 +16,15 @@ Every task's requirements implicitly include this section.
 
 - **Python 3.12 only.** `requires-python = ">=3.12"`.
 - **On macOS, `brew install libomp` is required** before `pip install`, or `import xgboost` fails.
-- **The new CLI must never import `data.py` or `train.py`.** Both import scikit-learn, which is **not installed in the Docker builder stage** (`pip install .`, never `.[train]`). Importing either would crash the build. The CLI may import only `artifact`, `config`, `schema`, `banding`, `lockfile`, and `hashing`.
+- **The new CLI must never import `data.py` or `train.py`.** Both import scikit-learn at
+  module scope, and scikit-learn is **not installed in the Docker builder stage**
+  (`pip install .`, never `.[train]` — sklearn is in the `train` extra). Importing either
+  would crash the build, not merely offend the layering. The CLI may import only
+  `artifact`, `config`, `schema`, `banding`, `lockfile`, and `hashing`.
+- **Test that rule by naming those two modules — never by asserting
+  `'sklearn' not in sys.modules`.** The proxy check fails on *correct* code: xgboost
+  imports sklearn itself whenever sklearn is installed, which it is in a `[train,dev]`
+  dev venv. `tests/test_api.py:186-200` documents this trap and shows the right idiom.
 - **`pytest` must stay fully hermetic and offline.** No test may touch the network. Loopback `http.server` is fine.
 - **`ruff` line-length is 100**, lint rules `["E", "F", "I", "UP", "B"]`. Run `ruff check . && ruff format --check .` before every commit; CI enforces formatting.
 - **`mypy src/` must pass.**
@@ -94,17 +102,27 @@ def test_file_sha256_reads_in_chunks_so_a_file_larger_than_the_buffer_still_hash
     assert file_sha256(target) == hashlib.sha256(payload).hexdigest()
 
 
-def test_hashing_module_does_not_drag_in_sklearn() -> None:
-    """hashing.py exists precisely so the Docker builder stage -- which has no
-    scikit-learn -- can hash files. Importing it must not import sklearn."""
+def test_hashing_module_does_not_reach_the_training_modules() -> None:
+    """hashing.py exists precisely so the Docker builder stage -- which installs
+    the base package only -- can hash files.
+
+    This names creditboost.data and creditboost.train rather than checking for
+    sklearn, following the idiom tests/test_api.py:186-200 established and
+    explained: sklearn's presence depends on installed extras AND on xgboost's
+    own unrelated optional sklearn integration, so a proxy check on sklearn is
+    both false-positive and false-negative prone. Naming the forbidden modules
+    sidesteps both.
+    """
     import subprocess
     import sys
 
-    result = subprocess.run(
-        [sys.executable, "-c", "import creditboost.hashing, sys; assert 'sklearn' not in sys.modules"],
-        capture_output=True,
-        text=True,
+    code = (
+        "import sys\n"
+        "import creditboost.hashing\n"
+        "forbidden = [m for m in ('creditboost.data', 'creditboost.train') if m in sys.modules]\n"
+        "assert not forbidden, f'hashing pulled in training module(s): {forbidden}'\n"
     )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 ```
 
@@ -680,24 +698,28 @@ def test_verify_via_the_cli_returns_one_and_explains_on_failure(
     assert "fixture" in capsys.readouterr().err
 
 
-def test_the_cli_never_imports_sklearn(tmp_path: Path) -> None:
+def test_the_cli_never_reaches_the_training_modules() -> None:
     """artifact_cli runs in the Docker builder stage, which installs the base
-    package only. An accidental import of data.py or train.py would crash the
-    build, so this asserts the dependency direction the same way the serve
-    package's own guard does."""
+    package only -- scikit-learn is in the [train] extra and is absent there.
+    data.py imports sklearn at module scope, so an accidental import of it
+    would not merely be untidy: it would crash the build.
+
+    Do NOT rewrite this as `assert 'sklearn' not in sys.modules`. That check
+    FAILS even when the code is correct, because xgboost imports sklearn
+    itself whenever sklearn happens to be installed -- which it is in a
+    [train,dev] dev venv. tests/test_api.py:186-200 documents this trap; this
+    test follows the same idiom for the same reason.
+    """
     import subprocess
     import sys
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import creditboost.artifact_cli, sys; "
-            "assert 'sklearn' not in sys.modules, sorted(m for m in sys.modules if 'sklearn' in m)",
-        ],
-        capture_output=True,
-        text=True,
+    code = (
+        "import sys\n"
+        "import creditboost.artifact_cli\n"
+        "forbidden = [m for m in ('creditboost.data', 'creditboost.train') if m in sys.modules]\n"
+        "assert not forbidden, f'artifact_cli pulled in training module(s): {forbidden}'\n"
     )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 ```
 

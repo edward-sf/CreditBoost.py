@@ -259,9 +259,21 @@ Recorded rather than solved, so the trade is on the record:
    existing.** Deleting a release breaks every build pinned to it, including old commits
    that used to build. The mitigation is discipline — never delete a model release — not
    code. This is the real price of the milestone, and it is the normal price.
-2. **Fully offline builds stop working** without a warm Docker layer cache. Today
-   `git clone && docker build` works with no network; afterwards it will not. `pytest`
-   stays fully offline either way.
+
+   The blast radius is narrower than "everything breaks", and worth stating precisely:
+   CI publishes every image to GHCR tagged by commit sha, so a deleted release costs the
+   ability to **rebuild** an old commit, not the ability to **deploy** it — the built
+   image is still pullable. Recovery is also possible rather than theoretical: any
+   existing image carries `/app/models/model.json`, so a lost release can be
+   reconstructed with `docker cp` from a pulled image, and the lockfile's digest proves
+   the recovered bytes are the right ones.
+2. **The build adds one more host it must reach.** This is a smaller change than it first
+   appears, and the first draft of this spec overstated it. `docker build` is *already*
+   not offline: the builder stage runs `pip install --no-cache-dir .`, which pulls
+   fastapi, uvicorn, xgboost, pandas and numpy from PyPI, on top of pulling the
+   `python:3.12-slim` base image from Docker Hub. The change is therefore from two
+   external hosts to three — adding `github.com` to `pypi.org` and Docker Hub — not from
+   offline to online. `pytest` stays fully offline either way.
 
 ## Testing
 
