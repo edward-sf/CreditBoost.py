@@ -16,6 +16,15 @@ echo "==> GET /health"
 curl -fsS "${BASE_URL}/health" | tee /tmp/health.json
 grep -q '"status":"ok"' /tmp/health.json
 
+# The image is built from a verified release, but this is the end-to-end
+# proof: the RUNNING container is serving a production model, asserted at the
+# exact gate before the image is published to GHCR.
+EXPECT_PROVENANCE="${EXPECT_PROVENANCE:-production}"
+if ! grep -q "\"provenance\":\"${EXPECT_PROVENANCE}\"" /tmp/health.json; then
+  echo "expected provenance \"${EXPECT_PROVENANCE}\" in /health, got: $(cat /tmp/health.json)" >&2
+  exit 1
+fi
+
 echo "==> POST /predict (thin-file borrower, no external scores)"
 curl -fsS -X POST "${BASE_URL}/predict" \
   -H 'Content-Type: application/json' \
