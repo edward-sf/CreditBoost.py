@@ -78,6 +78,7 @@ source_modules = [
     "creditboost.banding",
     "creditboost.config",
     "creditboost.hashing",
+    "creditboost.fairness",
 ]
 forbidden_modules = [
     "creditboost.data",
