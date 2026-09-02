@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .banding import RiskBand
 
@@ -77,6 +77,54 @@ class PredictResponse(BaseModel):
             "1002.9 requires. Empty when no factor pushed the score upward."
         ),
     )
+
+
+class GroupRate(BaseModel):
+    """One group's outcome rate. `n` travels with the rate so a reader can judge
+    whether a ratio near the threshold is signal or noise."""
+
+    group: str
+    adverse_rate: float = Field(ge=0, le=1)
+    n: int = Field(ge=0)
+
+
+class AttributeFairness(BaseModel):
+    """One protected attribute's adverse impact ratio, or the reason there isn't
+    one. Exactly one of the two is ever set: an attribute that could not be
+    measured has established nothing, and must never read as having passed."""
+
+    attribute: str
+    adverse_impact_ratio: float | None = Field(default=None, ge=0, le=1)
+    unmeasured_reason: str | None = None
+    groups: list[GroupRate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def exactly_one_outcome(self) -> AttributeFairness:
+        measured = self.adverse_impact_ratio is not None
+        unmeasured = self.unmeasured_reason is not None
+        if measured == unmeasured:
+            raise ValueError(
+                f"attribute {self.attribute!r} must be either measured "
+                "(adverse_impact_ratio) or unmeasured (unmeasured_reason), never "
+                "both and never neither"
+            )
+        return self
+
+
+class FairnessReport(BaseModel):
+    """Disparate impact across protected attributes, measured on the validation
+    split at training time.
+
+    band_low_max records the policy the measurement was taken under. Risk-band
+    thresholds are business policy that changes without retraining, so a stored
+    ratio can go stale; recording the threshold makes that discoverable rather
+    than silent. When band policy moves, fairness must be re-measured.
+    """
+
+    adverse_definition: str
+    band_low_max: float = Field(ge=0, le=1)
+    min_group_size: int = Field(ge=1)
+    attributes: list[AttributeFairness]
 
 
 class ModelMetadata(BaseModel):
