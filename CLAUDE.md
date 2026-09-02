@@ -4,40 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Milestone 1 — the thin end-to-end slice — is implemented, tested, and merged.** The
-package lives under `src/creditboost/`, tests under `tests/`, and a production-trained
-artifact is committed at `models/model.json` / `models/model_meta.json`.
+**Milestones 1 and 2 are implemented, tested, and merged.** The package lives under
+`src/creditboost/`, tests under `tests/`, and the production-trained artifact lives in a
+GitHub Release pinned by `models/model.lock.json` — it is not committed.
 
 - Design spec: `docs/superpowers/specs/2026-08-30-creditboost-thin-slice-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-08-30-creditboost-thin-slice.md`
 
-Both describe the reasoning behind the decisions recorded in Architecture and Invariants
-below — read them to understand *why* the code looks the way it does, not as a description
-of work still to do. Any future work on this codebase (bug fixes, Milestone 2 and beyond)
-should still follow the plan's task-by-task, test-first structure rather than improvising an
-equivalent one.
+Milestone 2's spec and plan are linked in the Roadmap below. All four describe the
+reasoning behind the decisions recorded in Architecture and Invariants below — read them
+to understand *why* the code looks the way it does, not as a description of work still to
+do. Any future work on this codebase (bug fixes and beyond) should still follow the plans'
+task-by-task, test-first structure rather than improvising an equivalent one.
 
 ## Roadmap
 
 **Milestone 1 — thin end-to-end slice.** Done. A deliberately minimal path through all
 three subsystems: Home Credit training data, a 21-feature XGBoost model, a committed
 artifact baked into a container, a FastAPI `/predict`, and GitHub Actions publishing to
-GHCR. All eleven tasks landed; the committed artifact in `models/` is `provenance:
-"production"`, trained on the real Kaggle dataset (roc_auc 0.7533).
+GHCR. All eleven tasks landed; the artifact it produced is `provenance: "production"`,
+trained on the real Kaggle dataset (roc_auc 0.7533). Milestone 2 moved that artifact out
+of git, so the "committed artifact" described here is now a released one.
 
-**Milestone 2 — model artifact storage.** Deliberately **not** specced or planned yet.
-Milestone 1 commits the trained model to git, which is poor practice as a permanent
-arrangement: git never forgets, so every retrain appends a full multi-megabyte copy that
-cannot be removed without rewriting history, and it welds the model lifecycle to the code
-lifecycle. It is accepted for Milestone 1 because a self-contained clone is what lets
-Tasks 1–10 be verified with no credentials at all, and because adding a registry would mean
-the first end-to-end run depends on two unproven things at once.
+**Milestone 2 — model artifact storage.** Done. The trained model's bytes live in a
+GitHub Release; `models/model.lock.json` pins the release tag and a sha256 per asset.
+The Docker builder fetches and verifies them in a single `RUN`, so an image containing
+an unverified, fixture-provenance, or ECOA-violating artifact cannot be built at all.
+History was deliberately not rewritten — the problem was future retrains appending
+copies, which deleting from `HEAD` solves.
 
-**Do not spec or begin Milestone 2 until Milestone 1 is proven.** When it starts, GitHub
-Releases is the cheapest real upgrade — no new infrastructure, just a release plus a
-build-arg download. Nothing else is scheduled: SHAP explanations, experiment tracking, the
-six auxiliary Home Credit tables, batch prediction, authentication, and automated
-retraining are all out of scope and unspecced.
+- Design spec: `docs/superpowers/specs/2026-09-01-creditboost-model-artifact-storage-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-09-01-creditboost-model-artifact-storage.md`
+
+**Nothing else is scheduled.** SHAP explanations, experiment tracking, the six auxiliary
+Home Credit tables, batch prediction, authentication, and automated retraining remain out
+of scope and unspecced.
 
 ## Architecture
 
@@ -91,8 +92,26 @@ understanding why it exists.
   that changes without retraining.
 - **No applicant financial field may ever be logged.** Logs carry request id, latency, model
   version, and risk band only.
-- **CI never downloads from Kaggle.** It touches only the synthetic fixture and the committed
-  artifact, which is what keeps it hermetic and credential-free. Training is a manual step.
+- **CI never downloads from Kaggle.** It touches only the synthetic fixture and exactly one
+  external asset: the checksum-pinned public release the lockfile names. It stays
+  credential-free, because the repository is public. Training is a manual step.
+- **A bad artifact cannot be built into an image.** `creditboost-artifact verify` runs
+  inside the Docker builder and rejects a digest mismatch, a version disagreeing with
+  `config.MODEL_VERSION`, a wrong feature order, an ECOA-prohibited feature in either the
+  sidecar or the booster's own `feature_names`, or `provenance != "production"`. This is
+  structural, not a test that can be skipped.
+- **`models/model.lock.json` and `config.MODEL_VERSION` move in the same commit.** `verify`
+  enforces it, so `/health` cannot report a version the artifact does not have.
+- **Model releases are not meant to be deleted.** Deleting one breaks rebuilds of every
+  commit pinned to it. It is recoverable rather than fatal — CI publishes every image to
+  GHCR tagged by commit sha, so the image stays pullable and the artifact can be recovered
+  with `docker cp` from it, with the lockfile's digest proving the recovered bytes are
+  right — but the recovery is a chore, so don't.
+- **The one-way dependency rule is a contract, not a convention.** `[tool.importlinter]` in
+  `pyproject.toml` forbids `serve/`, `artifact_cli`, and the shared modules from reaching
+  `data.py` or `train.py`; CI runs `lint-imports`. This is what keeps scikit-learn out of
+  the runtime image and lets the artifact CLI import cleanly in the Docker builder, where
+  scikit-learn is absent.
 - The test fixture is synthetic, never sampled from the real dataset — Kaggle's terms
   restrict redistribution.
 
@@ -124,9 +143,15 @@ ruff check . && ruff format --check . # CI checks formatting; run before committ
 mypy src/
 
 creditboost-train --data data/application_train.csv --provenance production
+./scripts/release-model.sh 0.2.0      # publish + rewrite models/model.lock.json
+creditboost-artifact fetch            # pull the pinned release into models/
+creditboost-artifact verify           # check what's on disk against the lockfile
 docker build -t creditboost:dev . && docker run -d --rm -p 8000:8000 creditboost:dev
 ./scripts/smoke.sh http://localhost:8000
 ```
+
+A fresh clone carries **no** `models/*.json`, so a local `uvicorn` run needs
+`creditboost-artifact fetch` first. `pytest` does not — it trains its own fixture.
 
 The training dataset lives at `data/application_train.csv`, is gitignored, and is obtained
 manually from Kaggle's Home Credit Default Risk competition.
