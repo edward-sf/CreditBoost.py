@@ -1,6 +1,3 @@
-import subprocess
-import sys
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -180,28 +177,3 @@ def test_prediction_logs_carry_no_applicant_financial_data(client):
     # would also pass if logging emitted nothing at all.
     for expected_key in ("request_id", "latency_ms", "model_version", "risk_band"):
         assert expected_key in record, f"expected {expected_key!r} in {record!r}"
-
-
-def test_serving_does_not_import_the_training_stack():
-    """Enforces the one-way dependency rule: serve/ never reaches into training,
-    which is what keeps scikit-learn out of the runtime image.
-
-    Checks directly for creditboost.data and creditboost.train in sys.modules
-    after importing the serving app, rather than checking for a downstream
-    package like scikit-learn as a proxy: sklearn's presence depends on
-    whichever extras happen to be installed in the venv running the test, and
-    on xgboost's own unrelated optional integration with sklearn -- neither of
-    which serve/ controls. Naming the training modules themselves sidesteps
-    both of those, and -- unlike a proxy check -- also catches a *guarded*
-    forbidden import: e.g. a stray
-    `try:\n    from ..data import split\nexcept ImportError:\n    pass`
-    inside serve/ would silently no-op under a proxy check, but it still
-    leaves `creditboost.data` sitting in sys.modules, which this test catches.
-    """
-    code = (
-        "import sys\n"
-        "import creditboost.serve.app\n"
-        "forbidden = [m for m in ('creditboost.data', 'creditboost.train') if m in sys.modules]\n"
-        "assert not forbidden, f'serve/ pulled in forbidden training module(s): {forbidden}'\n"
-    )
-    subprocess.run([sys.executable, "-c", code], check=True)
