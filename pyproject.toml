@@ -36,6 +36,7 @@ dev = [
 
 [project.scripts]
 creditboost-train = "creditboost.train:main"
+creditboost-artifact = "creditboost.artifact_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/creditboost"]
