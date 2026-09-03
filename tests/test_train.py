@@ -4,6 +4,7 @@ from creditboost import config
 from creditboost.artifact import load
 from creditboost.data import load_training_frame, split
 from creditboost.train import fit, main
+from tests.conftest import a_passing_fairness_report
 
 
 @pytest.fixture(scope="module")
@@ -108,6 +109,65 @@ def test_training_stamps_a_fairness_report(fixture_path, tmp_path):
     assert report["band_low_max"] == config.RISK_BAND_LOW_MAX
     assert report["adverse_definition"] == "band != low"
     assert [a["attribute"] for a in report["attributes"]] == list(config.FAIRNESS_ATTRIBUTES)
+
+
+def test_evaluate_is_called_with_the_aligned_validation_frame_and_predictions(
+    fixture_path, tmp_path, monkeypatch
+):
+    """Regression guard for the one property no other test checks: that the
+    frame and probabilities handed to `evaluate` are the validation split's own,
+    aligned row-for-row.
+
+    The fixture's validation split is only ~40 rows, so every attribute falls
+    below `config.MIN_FAIRNESS_GROUP_SIZE` and comes back unmeasured with empty
+    `groups` (see test_fixture.py) -- the *ratios* in the stamped report cannot
+    catch a wiring mistake here. If `train.py` were changed to pass
+    `booster.predict(_matrix(train_frame))` instead of `valid_frame`, or to
+    sort or filter the frame before grouping, every existing test would still
+    pass: the report would carry plausible-looking numbers computed from the
+    wrong rows, and a production retrain would stamp them into a shipped
+    artifact with no other symptom. This test intercepts `evaluate`'s actual
+    arguments rather than trusting its return value.
+
+    Note: `evaluate`'s `min_group_size` default is bound at its own
+    definition in fairness.py, so monkeypatching `config.MIN_FAIRNESS_GROUP_SIZE`
+    would not affect it and is not a substitute for this test.
+    """
+    from creditboost import train
+
+    captured: dict[str, object] = {}
+
+    def spy(frame, probabilities, **kwargs):
+        captured["frame"] = frame
+        captured["probabilities"] = list(probabilities)
+        return a_passing_fairness_report()
+
+    monkeypatch.setattr(train, "evaluate", spy)
+
+    model_path = tmp_path / "model.json"
+    meta_path = tmp_path / "meta.json"
+    code = train.main(
+        [
+            "--data",
+            str(fixture_path),
+            "--model-out",
+            str(model_path),
+            "--metadata-out",
+            str(meta_path),
+            "--provenance",
+            "fixture",
+        ]
+    )
+    assert code == 0
+
+    # Recompute the same seeded split independently to get the expected
+    # validation frame, rather than trusting train.py to have used it.
+    _, expected_valid_frame = split(load_training_frame(fixture_path))
+    assert list(captured["frame"].index) == list(expected_valid_frame.index)
+
+    loaded = load(model_path, meta_path)
+    expected_probabilities = loaded.booster.predict(train._matrix(expected_valid_frame)).tolist()
+    assert captured["probabilities"] == pytest.approx(expected_probabilities)
 
 
 def test_a_failing_ratio_writes_no_artifact(fixture_path, tmp_path, monkeypatch):

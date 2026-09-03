@@ -146,12 +146,20 @@ def test_an_attribute_must_be_one_or_the_other():
         AttributeFairness(attribute="CODE_GENDER")
 
 
-def test_a_ratio_outside_zero_to_one_is_rejected():
+def test_a_ratio_above_one_is_rejected():
     """min/max over favourable rates cannot exceed 1. A value above it means the
     ratio was computed upside down."""
 
     with pytest.raises(ValidationError):
         AttributeFairness(attribute="CODE_GENDER", adverse_impact_ratio=1.23)
+
+
+def test_a_ratio_below_zero_is_rejected():
+    """A ratio of two rates in [0, 1] can never be negative. A negative value
+    means the ratio was computed from something other than favourable rates."""
+
+    with pytest.raises(ValidationError):
+        AttributeFairness(attribute="CODE_GENDER", adverse_impact_ratio=-0.1)
 
 
 def test_a_fairness_report_round_trips_through_json():

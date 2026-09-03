@@ -3,6 +3,7 @@ import pytest
 
 from creditboost import config
 from creditboost.fairness import evaluate, failing_attributes
+from creditboost.schema import AttributeFairness, FairnessReport
 
 
 def frame_and_probabilities(
@@ -25,7 +26,7 @@ def frame_and_probabilities(
     return frame, probabilities
 
 
-def attribute_fairness(attribute_name: str, report) -> dict:
+def attribute_fairness(attribute_name: str, report: FairnessReport) -> AttributeFairness:
     found = [a for a in report.attributes if a.attribute == attribute_name]
     assert found, f"{attribute_name} missing from the report"
     return found[0]

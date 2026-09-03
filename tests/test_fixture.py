@@ -58,10 +58,12 @@ def test_fixture_has_every_fairness_attribute(frame):
         assert column in frame.columns
 
 
-def test_fixture_gender_groups_are_both_large_enough_to_measure(frame):
-    """A 200-row fixture split evenly gives 100 per group, which is exactly the
-    default minimum. Drawing it randomly could land at 95/105 and make the
-    integration test flaky, so the split is deterministic."""
+def test_fixture_gender_split_is_deterministic_and_balanced(frame):
+    """The split is alternated by index rather than drawn, so it is
+    reproducible across regenerations and gender is never confounded with row
+    position. This does NOT make gender measurable: measurement happens on the
+    ~40-row validation split, not this 200-row frame, so both groups fall below
+    `config.MIN_FAIRNESS_GROUP_SIZE` regardless of how this frame is split."""
     counts = frame["CODE_GENDER"].value_counts()
     assert set(counts.index) == {"F", "M"}
     assert counts.min() == 100

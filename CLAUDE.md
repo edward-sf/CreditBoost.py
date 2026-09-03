@@ -11,11 +11,12 @@ GitHub Release pinned by `models/model.lock.json` — it is not committed.
 - Design spec: `docs/superpowers/specs/2026-08-30-creditboost-thin-slice-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-08-30-creditboost-thin-slice.md`
 
-Milestone 2's spec and plan are linked in the Roadmap below. All four describe the
-reasoning behind the decisions recorded in Architecture and Invariants below — read them
-to understand *why* the code looks the way it does, not as a description of work still to
-do. Any future work on this codebase (bug fixes and beyond) should still follow the plans'
-task-by-task, test-first structure rather than improvising an equivalent one.
+Milestones 2 through 4's specs and plans are linked in the Roadmap below, eight documents
+in all. Each describes the reasoning behind the decisions recorded in Architecture and
+Invariants below — read them to understand *why* the code looks the way it does, not as a
+description of work still to do. Any future work on this codebase (bug fixes and beyond)
+should still follow the plans' task-by-task, test-first structure rather than improvising
+an equivalent one.
 
 ## Roadmap
 

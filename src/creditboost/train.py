@@ -129,6 +129,12 @@ def main(argv: list[str] | None = None) -> int:
                 attribute.attribute,
                 config.MIN_ADVERSE_IMPACT_RATIO,
             )
+            logger.error(
+                "    %d group(s) eligible (n >= %d); groups below the minimum size "
+                "are excluded and not shown",
+                len(attribute.groups),
+                fairness.min_group_size,
+            )
             for group in attribute.groups:
                 logger.error(
                     "    %s: adverse rate %.4f (n=%d)",
@@ -142,6 +148,12 @@ def main(argv: list[str] | None = None) -> int:
         "adverse impact ratios: %s",
         {a.attribute: a.adverse_impact_ratio for a in fairness.attributes},
     )
+    unmeasured = [a for a in fairness.attributes if a.adverse_impact_ratio is None]
+    if unmeasured:
+        for attribute in unmeasured:
+            logger.warning(
+                "%s was not measured: %s", attribute.attribute, attribute.unmeasured_reason
+            )
 
     metadata = ModelMetadata(
         version=config.MODEL_VERSION,
