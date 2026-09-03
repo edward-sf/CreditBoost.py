@@ -145,7 +145,12 @@ class CandidateResult(BaseModel):
 
     @model_validator(mode="after")
     def exactly_one_outcome(self) -> CandidateResult:
-        scored = self.roc_auc is not None and self.min_adverse_impact_ratio is not None
+        if (self.roc_auc is None) != (self.min_adverse_impact_ratio is None):
+            raise ValueError(
+                f"candidate {self.name!r} has only half a score: roc_auc and "
+                "min_adverse_impact_ratio are set together or not at all"
+            )
+        scored = self.roc_auc is not None
         failed = self.failed_reason is not None
         if scored == failed:
             raise ValueError(

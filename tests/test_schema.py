@@ -234,6 +234,24 @@ def test_a_candidate_must_be_either_scored_or_failed():
         CandidateResult(name="x", n_features=3)
 
 
+def test_a_candidate_cannot_have_only_roc_auc_without_air():
+    """Both score fields must be set together. A half-score is invalid."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, roc_auc=0.7)
+
+
+def test_a_candidate_cannot_have_only_air_without_roc_auc():
+    """Both score fields must be set together. A half-score is invalid."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, min_adverse_impact_ratio=0.9)
+
+
+def test_a_candidate_cannot_have_roc_auc_with_failed_reason():
+    """A candidate with only one score field set cannot also have a failure reason."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, roc_auc=0.7, failed_reason="boom")
+
+
 def test_selected_must_name_a_candidate_in_the_frontier():
     with pytest.raises(ValidationError):
         a_report(selected="a-candidate-that-was-never-run")
