@@ -67,8 +67,11 @@ creditboost-train --data data/application_train.csv --provenance production --se
 
 The `search` command is read-only and prints a frontier of model specifications ranked by
 their adverse impact ratio at a matched approval rate. The `--search` flag on `train` runs
-the same search at training time and adopts a less discriminatory alternative if one clears
-the AUC budget; otherwise it trains the baseline and stamps the frontier into the artifact.
+the same search at training time: when the baseline wins, it trains and stamps the frontier
+into the artifact; when a non-baseline candidate wins, training writes nothing and exits
+non-zero, printing the code change required — because adopting a candidate means its
+features, levels or parameters must be reflected in `config.py`, `features.py` and
+`train.PARAMS`, or the train/serve skew gate would describe a model that no longer exists.
 The search adds roughly four minutes to a training run. `creditboost-train` writes
 `models/model.json` and `models/model_meta.json`, but refuses if validation ROC-AUC falls
 below the floor in `config.py` or if any adverse impact ratio falls below
