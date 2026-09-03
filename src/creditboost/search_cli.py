@@ -41,7 +41,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"{candidate.name:38s} {'--':>8s} {'--':>9s}  {candidate.failed_reason}")
 
-    chosen = search.select(ranking.candidates, baseline=search.BASELINE.name)
+    try:
+        chosen = search.select(ranking.candidates, baseline=search.BASELINE.name)
+    except search.BaselineMissingError:
+        # No candidate could be scored -- on a small dataset no group reaches
+        # MIN_FAIRNESS_GROUP_SIZE. The frontier above shows each candidate's
+        # failed_reason, so nothing more can be said.
+        print("\nno candidate could be scored; nothing could be selected")
+        return 0
+
     print(f"\nselection rule would choose: {chosen}")
     if chosen == search.BASELINE.name:
         print("no less discriminatory alternative was found within the AUC budget")
