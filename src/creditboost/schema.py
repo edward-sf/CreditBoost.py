@@ -127,6 +127,67 @@ class FairnessReport(BaseModel):
     attributes: list[AttributeFairness]
 
 
+class CandidateResult(BaseModel):
+    """One model specification's score in the search.
+
+    Exactly one of the two states holds, for the same reason AttributeFairness
+    has the rule: a candidate that could not be trained has established nothing,
+    and a default score of 0.0 would drag the recorded frontier downward and
+    misrepresent the breadth of the search.
+    """
+
+    name: str
+    n_features: int = Field(ge=0)
+    roc_auc: float | None = Field(default=None, ge=0, le=1)
+    min_adverse_impact_ratio: float | None = Field(default=None, ge=0, le=1)
+    adverse_impact_ratios: dict[str, float] = Field(default_factory=dict)
+    failed_reason: str | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_outcome(self) -> CandidateResult:
+        scored = self.roc_auc is not None and self.min_adverse_impact_ratio is not None
+        failed = self.failed_reason is not None
+        if scored == failed:
+            raise ValueError(
+                f"candidate {self.name!r} must be either scored (roc_auc and "
+                "min_adverse_impact_ratio) or failed (failed_reason), never both "
+                "and never neither"
+            )
+        return self
+
+
+class SearchReport(BaseModel):
+    """The less discriminatory alternative search that produced this model.
+
+    Recorded whether or not it changed anything. A search that found nothing is
+    the evidence that a search was conducted, and an artifact that discarded it
+    could not distinguish "looked and stayed" from "never looked".
+
+    target_approval_rate and ranking_basis record how candidates were compared.
+    That comparison is internal to the search and is NOT the artifact's fairness
+    report, which is measured separately at config.RISK_BAND_LOW_MAX.
+    """
+
+    baseline: str
+    selected: str
+    auc_budget: float = Field(ge=0)
+    min_air_improvement: float = Field(ge=0)
+    target_approval_rate: float = Field(ge=0, le=1)
+    ranking_basis: str
+    candidates: list[CandidateResult]
+
+    @model_validator(mode="after")
+    def names_resolve(self) -> SearchReport:
+        known = {candidate.name for candidate in self.candidates}
+        for label, name in (("baseline", self.baseline), ("selected", self.selected)):
+            if name not in known:
+                raise ValueError(
+                    f"{label} {name!r} does not name a candidate in this report; "
+                    f"known candidates are {sorted(known)}"
+                )
+        return self
+
+
 class ModelMetadata(BaseModel):
     """Sidecar written next to model.json. The feature_order field is the gate
     that prevents a model being served against a mismatched transform."""
@@ -142,3 +203,7 @@ class ModelMetadata(BaseModel):
     xgboost_version: str
     provenance: Literal["fixture", "production"]
     fairness: FairnessReport
+    # Optional in the schema so fixture training need not run a four-minute
+    # search. creditboost-artifact verify requires it when provenance is
+    # "production", which is the gate that runs inside the Docker builder.
+    selection: SearchReport | None = None
