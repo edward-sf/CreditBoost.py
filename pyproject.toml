@@ -37,6 +37,7 @@ dev = [
 [project.scripts]
 creditboost-train = "creditboost.train:main"
 creditboost-artifact = "creditboost.artifact_cli:main"
+creditboost-search = "creditboost.search_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/creditboost"]
@@ -86,4 +87,5 @@ source_modules = [
 forbidden_modules = [
     "creditboost.data",
     "creditboost.train",
+    "creditboost.search",
 ]

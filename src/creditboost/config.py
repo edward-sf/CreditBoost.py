@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-MODEL_VERSION = "0.3.0"
+MODEL_VERSION = "0.4.0"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent.parent
@@ -263,3 +263,28 @@ MIN_FAIRNESS_GROUP_SIZE = 100
 
 # The four-fifths rule. A gate, not a dial: see the AUC floor above.
 MIN_ADVERSE_IMPACT_RATIO = 0.80
+
+# --- Alternative search ----------------------------------------------------
+
+# The selection split, as a fraction OF THE TRAINING SPLIT -- not of the frame.
+# Selection nests inside training so the validation split never participates in
+# it: a winner chosen on validation data would carry an optimistically biased
+# ratio into the artifact. The cost is that candidates train on 0.6 of the
+# frame rather than 0.8, which makes their absolute AUCs slightly pessimistic;
+# only their ranking is consumed, and every candidate shares the handicap.
+SELECTION_SIZE = 0.25
+
+# How much validation ROC-AUC the search may trade away for a fairer model.
+# This is where "comparable performance" is written down: the burden-shifting
+# test asks whether a LESS DISCRIMINATORY ALTERNATIVE ACHIEVING COMPARABLE
+# PERFORMANCE exists, and a number stated once is more honest than a judgment
+# made per release. It is a tight budget on the measured frontier -- the
+# external-scores-only model costs 0.028 AUC and falls outside it.
+MAX_AUC_SACRIFICE = 0.01
+
+# A winning candidate must beat the baseline's minimum adverse impact ratio by
+# more than this, or the baseline is kept. Grounded in measurement: 300
+# bootstrap resamples of the validation split put AIR's standard deviation at
+# about 0.005, and the selection split is smaller still. Without this guard the
+# search churns the shipped model on noise.
+MIN_AIR_IMPROVEMENT = 0.01

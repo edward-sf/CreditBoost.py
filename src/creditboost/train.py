@@ -18,12 +18,12 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
-from . import config
+from . import config, search
 from .artifact import save
 from .data import file_sha256, load_training_frame, split
 from .fairness import evaluate, failing_attributes
-from .features import transform
-from .schema import ModelMetadata
+from .schema import ModelMetadata, SearchReport
+from .search import BASELINE, CandidateSpec
 
 logger = logging.getLogger(__name__)
 
@@ -41,24 +41,24 @@ NUM_BOOST_ROUND = 500
 EARLY_STOPPING_ROUNDS = 30
 
 
-def _matrix(frame: pd.DataFrame) -> xgb.DMatrix:
+def _matrix(frame: pd.DataFrame, spec: CandidateSpec = BASELINE) -> xgb.DMatrix:
     return xgb.DMatrix(
-        transform(frame),
+        search.apply(spec, frame),
         label=frame[config.TARGET_COLUMN],
         enable_categorical=True,
     )
 
 
 def fit(
-    train_frame: pd.DataFrame, valid_frame: pd.DataFrame
+    train_frame: pd.DataFrame, valid_frame: pd.DataFrame, spec: CandidateSpec = BASELINE
 ) -> tuple[xgb.Booster, dict[str, float]]:
     """Train and evaluate. No scale_pos_weight: it inflates probabilities away
     from the true base rate, which would break calibration, make the Brier score
     meaningless, and invalidate the configured risk-band thresholds."""
-    dtrain, dvalid = _matrix(train_frame), _matrix(valid_frame)
+    dtrain, dvalid = _matrix(train_frame, spec), _matrix(valid_frame, spec)
 
     booster = xgb.train(
-        PARAMS,
+        {**PARAMS, **spec.params},
         dtrain,
         num_boost_round=NUM_BOOST_ROUND,
         evals=[(dvalid, "valid")],
@@ -97,6 +97,14 @@ def main(argv: list[str] | None = None) -> int:
         default="production",
         help="Records whether this model was trained on real data or the test fixture.",
     )
+    parser.add_argument(
+        "--search",
+        action="store_true",
+        help=(
+            "Search for a less discriminatory alternative before training, and "
+            "record the frontier in the artifact."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -105,7 +113,65 @@ def main(argv: list[str] | None = None) -> int:
     train_frame, valid_frame = split(frame)
     logger.info("training on %d rows, validating on %d", len(train_frame), len(valid_frame))
 
-    booster, metrics = fit(train_frame, valid_frame)
+    selection = None
+    spec = search.BASELINE
+    if args.search:
+        logger.info(
+            "searching %d candidates for a less discriminatory alternative",
+            len(search.CANDIDATES),
+        )
+        ranking = search.rank(train_frame)
+        for candidate in ranking.candidates:
+            if candidate.failed_reason is None:
+                logger.info(
+                    "  %-36s auc %.4f  min AIR %.4f",
+                    candidate.name,
+                    candidate.roc_auc,
+                    candidate.min_adverse_impact_ratio,
+                )
+            else:
+                logger.info("  %-36s failed: %s", candidate.name, candidate.failed_reason)
+
+        try:
+            chosen = search.select(ranking.candidates, baseline=search.BASELINE.name)
+        except search.BaselineMissingError as error:
+            # No candidate could be scored -- on a small dataset no group reaches
+            # MIN_FAIRNESS_GROUP_SIZE. Keep the baseline and record the frontier
+            # as it was measured: every candidate carries its own failed_reason,
+            # so the report says plainly that nothing could be established.
+            logger.warning(
+                "the search could not score any candidate (%s); keeping the "
+                "baseline and recording the frontier as measured",
+                error,
+            )
+            chosen = search.BASELINE.name
+
+        if chosen != search.BASELINE.name:
+            logger.error(
+                "the search selected %r over the baseline; no artifact written. "
+                "Adopting a candidate is a reviewed code change, not something a "
+                "training run may do to itself: its feature set, categorical "
+                "levels or hyperparameters must be reflected in config.py, "
+                "features.py and train.PARAMS, or the train/serve skew gate "
+                "would be describing a model that no longer exists. Promote %r "
+                "to the baseline in search.CANDIDATES, make the matching code "
+                "change, and re-run.",
+                chosen,
+                chosen,
+            )
+            return 1
+
+        selection = SearchReport(
+            baseline=search.BASELINE.name,
+            selected=chosen,
+            auc_budget=config.MAX_AUC_SACRIFICE,
+            min_air_improvement=config.MIN_AIR_IMPROVEMENT,
+            target_approval_rate=ranking.target_approval_rate,
+            ranking_basis=search.RANKING_BASIS,
+            candidates=ranking.candidates,
+        )
+
+    booster, metrics = fit(train_frame, valid_frame, spec)
     logger.info("metrics: %s", metrics)
 
     if metrics["roc_auc"] < args.min_auc:
@@ -165,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         xgboost_version=xgb.__version__,
         provenance=args.provenance,
         fairness=fairness,
+        selection=selection,
     )
     save(booster, metadata, args.model_out, args.metadata_out)
     logger.info("wrote %s and %s", args.model_out, args.metadata_out)

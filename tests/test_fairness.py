@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from creditboost import config
-from creditboost.fairness import evaluate, failing_attributes
+from creditboost.fairness import adverse_impact_ratios, evaluate, failing_attributes
 from creditboost.schema import AttributeFairness, FairnessReport
 
 
@@ -173,3 +173,43 @@ def test_a_wholly_adverse_population_is_unmeasured_not_zero():
     measured = attribute_fairness("CODE_GENDER", report)
     assert measured.adverse_impact_ratio is None
     assert "favourable" in measured.unmeasured_reason
+
+
+def test_adverse_impact_ratios_is_driven_by_the_mask_it_is_given():
+    """Same frame, two different adverse masks, two different ratios. This is
+    what lets the search score a candidate at a threshold of its own choosing
+    without reimplementing any of the grouping or the min/max direction."""
+    frame, _ = frame_and_probabilities(["F"] * 200 + ["M"] * 200, [0.0] * 400)
+
+    everyone_adverse = [True] * len(frame)
+    nobody_adverse = [False] * len(frame)
+
+    all_adverse = adverse_impact_ratios(frame, everyone_adverse, min_group_size=10)
+    none_adverse = adverse_impact_ratios(frame, nobody_adverse, min_group_size=10)
+
+    sex_all = next(a for a in all_adverse if a.attribute == "CODE_GENDER")
+    sex_none = next(a for a in none_adverse if a.attribute == "CODE_GENDER")
+
+    # Everyone adverse is the degenerate case: no favourable outcome anywhere.
+    assert sex_all.adverse_impact_ratio is None
+    assert sex_all.unmeasured_reason is not None
+    # Nobody adverse is perfect parity.
+    assert sex_none.adverse_impact_ratio == 1.0
+
+
+def test_evaluate_delegates_to_adverse_impact_ratios():
+    """evaluate is exactly adverse_impact_ratios over a band-derived mask, so a
+    caller passing the equivalent mask gets an identical answer."""
+    from creditboost.banding import risk_band
+
+    probabilities = [0.05 + 0.4 * (i % 3 == 0) for i in range(400)]
+    frame, _ = frame_and_probabilities(
+        ["F"] * 200 + ["M"] * 200,
+        probabilities,
+    )
+
+    via_evaluate = evaluate(frame, probabilities, min_group_size=10).attributes
+    mask = [risk_band(p) != "low" for p in probabilities]
+    via_mask = adverse_impact_ratios(frame, mask, min_group_size=10)
+
+    assert via_evaluate == via_mask

@@ -59,7 +59,10 @@ and the model retrained as `model-v0.2.0`; the field is still accepted, under
 (a sex proxy) and `Pensioner` (an age proxy) as levels, so an `employment_profile` reason can
 implicate a protected characteristic indirectly. Unlike marital status these are levels
 rather than a whole prohibited-basis feature, and dropping employment type would cost real
-signal. It belongs to disparate-impact measurement, which is unspecced.
+signal. Milestone 5 measured them against the baseline min AIR of 0.8041:
+`maternity-to-working` moves it by 0.0000 and `income-type-proxies-dropped` by +0.0002.
+They remain in the catalog as `maternity-to-working` and `income-type-proxies-dropped` so
+the finding is re-established on every search rather than remembered.
 
 **Milestone 4 — disparate impact measurement.** Done. `creditboost-train` measures an
 adverse impact ratio per protected attribute on the validation split, stamps the report into
@@ -74,9 +77,40 @@ manufacture documented assurance it had not established.
 - Design spec: `docs/superpowers/specs/2026-09-02-creditboost-disparate-impact-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-09-02-creditboost-disparate-impact.md`
 
-**Still open:** the `NAME_INCOME_TYPE` proxy levels recorded in Milestone 3 are now
-measurable but not resolved; remediation of any disparity found, intersectional analysis,
-and fairness of the reason codes across groups are all unspecced.
+**Milestone 5 — less discriminatory alternative search.** Done. `creditboost-train --search`
+ranks a catalog of model specifications at a matched approval rate on a split nested inside
+the training data, applies a 0.01 AUC budget and a 0.01 noise guard, and stamps the whole
+frontier into the artifact. `creditboost-artifact verify` refuses a production artifact that
+carries no such record.
+
+Measurement shaped every decision. Bootstrapping `model-v0.3.0` put the age ratio at 0.8100
+with sd 0.0046 and 1% of resamples already below the floor — it passed within noise, not
+comfortably. A design-time probe over sixteen small perturbations spanned 0.8058 to 0.8146,
+entirely inside that noise, and showed why a narrow search of fine-tunings would not move
+the needle. The shipped catalog also contains sixteen candidates, but the real-data frontier
+is different in character: best AUC is `min-child-weight-50` at 0.7506 (admitting AUC ≥
+0.7406), `external-scores-only` reaches min AIR 0.8595 but is *excluded by the AUC budget*
+at a cost of 0.028, and `no-employment` sits inside the budget at 0.8087 but is *rejected
+by the noise guard* — a mere +0.0046 over baseline. Both guards firing, for different
+reasons, shows the rule discriminates rather than rubber-stamps. The band threshold, by
+contrast, moves the ratio further than every model variant combined, which is exactly why
+it is excluded as a search axis rather than exploited.
+
+`model-v0.4.0` carries the identical fairness ratios as `model-v0.3.0` — sex 0.8684, age
+0.8100, marital status 0.8179 — because ranking reads only the training split and the final
+fit was unchanged; the model's sha256 digest did not budge. The milestone ships **no fairness
+improvement**: age remains at 0.8100 against the 0.80 floor. What is new is that every
+production model now carries recorded evidence it was searched, a negative result that
+establishes business necessity. The one real finding: removing the external bureau scores
+makes fairness markedly worse (0.8041 to 0.7023), locating the disparity in the
+application-form features, not the bureau scores.
+
+- Design spec: `docs/superpowers/specs/2026-09-02-creditboost-less-discriminatory-alternative-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-09-02-creditboost-less-discriminatory-alternative.md`
+
+**Still open:** remediation that actually moves the ratio, intersectional analysis, fairness
+of the reason codes across groups, deployment, prediction persistence, experiment tracking,
+the six auxiliary Home Credit tables, batch prediction, authentication.
 
 ## Architecture
 
@@ -184,6 +218,27 @@ understanding why it exists.
   scikit-learn is absent.
 - The test fixture is synthetic, never sampled from the real dataset — Kaggle's terms
   restrict redistribution.
+- **Every production model was selected by a recorded search.** `creditboost-artifact verify`
+  requires `ModelMetadata.selection` when `provenance == "production"`, so an image
+  containing an unsearched production artifact cannot be built.
+- **Candidates are ranked at matched approval rate, never at a fixed threshold.** At a fixed
+  threshold the ratio reports leniency, not fairness: a single-feature model reads 0.984 at
+  the band threshold and 0.930 at a matched rate. A test guards it.
+- **The band threshold is never a search axis.** It moves the ratio further than any model
+  variant, and it is risk appetite rather than fairness. `CandidateSpec` has no field that
+  can express one, and a test pins that field set.
+- **Selection happens strictly inside the training split.** `search.rank` receives the
+  training frame only, so the validation split the artifact reports on cannot participate.
+- **The search's matched-threshold ratio never reaches the artifact.** `ModelMetadata.fairness`
+  is always what `fairness.evaluate` produced at `RISK_BAND_LOW_MAX`.
+- **There is one implementation of the ratio arithmetic.** `fairness.adverse_impact_ratios`
+  serves both the gate and the search; the `min/max` direction has one place to be wrong.
+- **A negative search result is recorded, not discarded.** An artifact that dropped it could
+  not distinguish "looked and stayed" from "never looked".
+- **A non-baseline winner is a code change, not an automatic one.** `--search` writes nothing
+  and says what to change, because a winner's features, levels or parameters must be
+  reflected in `config.py`, `features.py` and `train.PARAMS` or the skew gate describes a
+  model that no longer exists.
 
 ## Metadata provenance
 
@@ -211,8 +266,11 @@ pytest tests/test_features.py::test_sentinel_is_scrubbed_before_the_ratio_is_der
 
 ruff check . && ruff format --check . # CI checks formatting; run before committing
 mypy src/
+lint-imports                          # enforce the one-way dependency rule
 
+creditboost-search --data data/application_train.csv     # print the frontier, write nothing
 creditboost-train --data data/application_train.csv --provenance production
+creditboost-train --data data/application_train.csv --provenance production --search
 ./scripts/release-model.sh 0.2.0      # publish + rewrite models/model.lock.json
 creditboost-artifact fetch            # pull the pinned release into models/
 creditboost-artifact verify           # check what's on disk against the lockfile

@@ -47,6 +47,10 @@ class AssetDownloadError(ArtifactError):
     """The release asset could not be downloaded after retrying."""
 
 
+class SelectionError(ArtifactError):
+    """A production artifact carries no record of an alternative search."""
+
+
 def _download_once(url: str, dest: Path) -> None:
     with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
         dest.write_bytes(response.read())
@@ -147,6 +151,25 @@ def verify_artifact(directory: Path, lock: ModelLock, allow_fixture: bool = Fals
             "published. Pass --allow-fixture only for local experiments."
         )
 
+    if metadata.provenance == "production":
+        if metadata.selection is None:
+            raise SelectionError(
+                "artifact provenance is 'production' but it carries no selection "
+                "report: this model was never searched for a less discriminatory "
+                "alternative. Disparate impact is a burden-shifting doctrine, and "
+                "business necessity rebuts a prima facie case only if no such "
+                "alternative exists -- an unsearched model cannot support that "
+                "claim. Retrain with `creditboost-train --search`."
+            )
+        if all(candidate.failed_reason is not None for candidate in metadata.selection.candidates):
+            raise SelectionError(
+                "artifact provenance is 'production' but no candidate in its "
+                "selection report could be scored: the search established "
+                "nothing. A frontier of failures must never read as a search "
+                "that found no better model. Retrain on data large enough to "
+                "measure disparate impact."
+            )
+
     # The end-to-end proof. load() re-checks the sidecar, checks the booster's
     # OWN feature_names baked into model.json, and checks xgboost versions.
     loaded = load(model_path, metadata_path)
@@ -212,3 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{type(err).__name__}: {err}", file=sys.stderr)
         return 1
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

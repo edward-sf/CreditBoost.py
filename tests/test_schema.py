@@ -4,11 +4,13 @@ from pydantic import ValidationError
 from creditboost import config
 from creditboost.schema import (
     AttributeFairness,
+    CandidateResult,
     FairnessReport,
     GroupRate,
     ModelMetadata,
     PredictRequest,
     PredictResponse,
+    SearchReport,
 )
 from tests.conftest import a_passing_fairness_report
 
@@ -177,3 +179,105 @@ def test_a_fairness_report_round_trips_through_json():
     )
 
     assert FairnessReport.model_validate_json(report.model_dump_json()) == report
+
+
+def a_candidate(name="baseline", auc=0.75, air=0.81):
+    return CandidateResult(
+        name=name,
+        n_features=20,
+        roc_auc=auc,
+        min_adverse_impact_ratio=air,
+        adverse_impact_ratios={"CODE_GENDER": 0.87, "DAYS_BIRTH": air},
+    )
+
+
+def a_report(candidates=None, baseline="baseline", selected="baseline"):
+    candidates = candidates if candidates is not None else [a_candidate()]
+    return SearchReport(
+        baseline=baseline,
+        selected=selected,
+        auc_budget=0.01,
+        min_air_improvement=0.01,
+        target_approval_rate=0.743,
+        ranking_basis="matched approval rate on the selection split",
+        candidates=candidates,
+    )
+
+
+def test_search_report_round_trips_through_json():
+    report = a_report()
+    assert SearchReport.model_validate_json(report.model_dump_json()) == report
+
+
+def test_a_failed_candidate_carries_a_reason_and_no_scores():
+    result = CandidateResult(name="empty", n_features=0, failed_reason="no features remain")
+    assert result.roc_auc is None
+    assert result.min_adverse_impact_ratio is None
+    assert result.adverse_impact_ratios == {}
+
+
+def test_a_candidate_cannot_be_both_scored_and_failed():
+    with pytest.raises(ValidationError):
+        CandidateResult(
+            name="x",
+            n_features=3,
+            roc_auc=0.7,
+            min_adverse_impact_ratio=0.9,
+            failed_reason="boom",
+        )
+
+
+def test_a_candidate_must_be_either_scored_or_failed():
+    # A default of 0.0 would silently drag the recorded frontier downward and
+    # misrepresent what the search found.
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3)
+
+
+def test_a_candidate_cannot_have_only_roc_auc_without_air():
+    """Both score fields must be set together. A half-score is invalid."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, roc_auc=0.7)
+
+
+def test_a_candidate_cannot_have_only_air_without_roc_auc():
+    """Both score fields must be set together. A half-score is invalid."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, min_adverse_impact_ratio=0.9)
+
+
+def test_a_candidate_cannot_have_roc_auc_with_failed_reason():
+    """A candidate with only one score field set cannot also have a failure reason."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, roc_auc=0.7, failed_reason="boom")
+
+
+def test_a_candidate_cannot_have_air_with_failed_reason():
+    """A candidate claiming a fairness score cannot also claim it failed."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, min_adverse_impact_ratio=0.9, failed_reason="boom")
+
+
+def test_selected_must_name_a_candidate_in_the_frontier():
+    with pytest.raises(ValidationError):
+        a_report(selected="a-candidate-that-was-never-run")
+
+
+def test_baseline_must_name_a_candidate_in_the_frontier():
+    with pytest.raises(ValidationError):
+        a_report(baseline="not-in-the-list", selected="baseline")
+
+
+def test_model_metadata_loads_without_a_selection_report():
+    metadata = ModelMetadata(
+        version="0.4.0",
+        trained_at="2026-09-02T00:00:00+00:00",
+        dataset_sha256="0" * 64,
+        n_train_rows=100,
+        feature_order=["EXT_SOURCE_1"],
+        metrics={"roc_auc": 0.75},
+        xgboost_version="3.4.1",
+        provenance="fixture",
+        fairness=a_passing_fairness_report(),
+    )
+    assert metadata.selection is None

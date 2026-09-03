@@ -46,21 +46,24 @@ def _groups(frame: pd.DataFrame, attribute: str) -> pd.Series:
     return frame[attribute].astype("string")
 
 
-def evaluate(
+def adverse_impact_ratios(
     frame: pd.DataFrame,
-    probabilities: Sequence[float],
+    adverse: Sequence[bool],
     min_group_size: int = config.MIN_FAIRNESS_GROUP_SIZE,
-) -> FairnessReport:
-    """Adverse impact ratio per protected attribute, over the rows in `frame`.
+) -> list[AttributeFairness]:
+    """Adverse impact ratio per protected attribute, given an explicit adverse
+    mask.
 
-    min_group_size is a parameter rather than read from config directly so tests
-    can lower it; train.py takes the configured default.
+    The mask is a parameter so the alternative search can score a candidate at a
+    threshold matched to another candidate's approval rate, without
+    reimplementing the age bucketing, the minimum group size, or -- above all --
+    the min/max direction. There is one implementation of that arithmetic.
     """
-    adverse = pd.Series([risk_band(float(p)) != "low" for p in probabilities], index=frame.index)
+    adverse_series = pd.Series(list(adverse), index=frame.index)
 
     attributes: list[AttributeFairness] = []
     for attribute in config.FAIRNESS_ATTRIBUTES:
-        table = pd.DataFrame({"group": _groups(frame, attribute), "adverse": adverse})
+        table = pd.DataFrame({"group": _groups(frame, attribute), "adverse": adverse_series})
         table = table.dropna(subset=["group"])
         summary = table.groupby("group")["adverse"].agg(["mean", "size"])
         eligible = summary[summary["size"] >= min_group_size]
@@ -103,11 +106,25 @@ def evaluate(
             )
         )
 
+    return attributes
+
+
+def evaluate(
+    frame: pd.DataFrame,
+    probabilities: Sequence[float],
+    min_group_size: int = config.MIN_FAIRNESS_GROUP_SIZE,
+) -> FairnessReport:
+    """Adverse impact ratio per protected attribute, over the rows in `frame`.
+
+    min_group_size is a parameter rather than read from config directly so tests
+    can lower it; train.py takes the configured default.
+    """
+    adverse = [risk_band(float(p)) != "low" for p in probabilities]
     return FairnessReport(
         adverse_definition=ADVERSE_DEFINITION,
         band_low_max=config.RISK_BAND_LOW_MAX,
         min_group_size=min_group_size,
-        attributes=attributes,
+        attributes=adverse_impact_ratios(frame, adverse, min_group_size),
     )
 
 

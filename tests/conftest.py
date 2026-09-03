@@ -29,3 +29,27 @@ def a_passing_fairness_report():
             )
         ],
     )
+
+
+def a_search_report():
+    """A minimal report in which the baseline won, for tests that need a valid
+    production ModelMetadata but are not about the search."""
+    from creditboost.schema import CandidateResult, SearchReport
+
+    return SearchReport(
+        baseline="baseline",
+        selected="baseline",
+        auc_budget=0.01,
+        min_air_improvement=0.01,
+        target_approval_rate=0.74,
+        ranking_basis="matched approval rate on the selection split",
+        candidates=[
+            CandidateResult(
+                name="baseline",
+                n_features=20,
+                roc_auc=0.75,
+                min_adverse_impact_ratio=0.81,
+                adverse_impact_ratios={"CODE_GENDER": 0.87, "DAYS_BIRTH": 0.81},
+            )
+        ],
+    )
