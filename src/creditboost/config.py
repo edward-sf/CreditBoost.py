@@ -266,6 +266,14 @@ MIN_ADVERSE_IMPACT_RATIO = 0.80
 
 # --- Alternative search ----------------------------------------------------
 
+# The selection split, as a fraction OF THE TRAINING SPLIT -- not of the frame.
+# Selection nests inside training so the validation split never participates in
+# it: a winner chosen on validation data would carry an optimistically biased
+# ratio into the artifact. The cost is that candidates train on 0.6 of the
+# frame rather than 0.8, which makes their absolute AUCs slightly pessimistic;
+# only their ranking is consumed, and every candidate shares the handicap.
+SELECTION_SIZE = 0.25
+
 # How much validation ROC-AUC the search may trade away for a fairer model.
 # This is where "comparable performance" is written down: the burden-shifting
 # test asks whether a LESS DISCRIMINATORY ALTERNATIVE ACHIEVING COMPARABLE

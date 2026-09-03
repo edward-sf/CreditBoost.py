@@ -31,9 +31,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
+import xgboost as xgb
+from sklearn.metrics import roc_auc_score
 
 from . import config
+from .data import split
+from .fairness import adverse_impact_ratios
 from .features import transform
 from .schema import CandidateResult
 
@@ -184,3 +189,124 @@ def select(
     if improvement <= min_improvement:
         return base.name
     return winner.name
+
+
+RANKING_BASIS = "matched approval rate on the selection split"
+
+
+@dataclass(frozen=True)
+class Ranking:
+    """A scored frontier, before any selection has been made."""
+
+    target_approval_rate: float
+    candidates: list[CandidateResult]
+
+
+def matched_adverse_mask(probabilities: np.ndarray, approval_rate: float) -> np.ndarray:
+    """The adverse mask that approves `approval_rate` of these applicants.
+
+    Comparing candidates at a fixed threshold measures how lenient each one is,
+    not how fair. A candidate whose probabilities are simply lower approves more
+    people and its ratio drifts toward 1.0 for that reason alone -- measured, a
+    single-feature model read 0.984 at a fixed threshold and 0.930 at a matched
+    rate. Taking a quantile of each candidate's own predictions removes the
+    scale entirely, so the comparison is of who is ranked adversely, not of how
+    many.
+    """
+    threshold = float(np.quantile(probabilities, approval_rate))
+    return probabilities > threshold
+
+
+def _fit(
+    train_features: pd.DataFrame,
+    train_labels: pd.Series,
+    score_features: pd.DataFrame,
+    score_labels: pd.Series,
+    params: Mapping[str, object],
+) -> np.ndarray:
+    """Train one candidate and return its predictions on the scoring frame.
+
+    Early stopping watches the SCORING frame, not the training one. Watching the
+    training frame would never stop early -- training loss keeps improving -- so
+    every candidate would run the full NUM_BOOST_ROUND and be ranked on an
+    overfit tail. This mirrors exactly what train.fit does with its validation
+    split, one level down.
+
+    train.py's constants are imported lazily because train.py imports this
+    module.
+    """
+    from .train import EARLY_STOPPING_ROUNDS, NUM_BOOST_ROUND, PARAMS
+
+    dtrain = xgb.DMatrix(train_features, label=train_labels, enable_categorical=True)
+    dscore = xgb.DMatrix(score_features, label=score_labels, enable_categorical=True)
+    booster = xgb.train(
+        {**PARAMS, **params},
+        dtrain,
+        num_boost_round=NUM_BOOST_ROUND,
+        evals=[(dscore, "select")],
+        early_stopping_rounds=EARLY_STOPPING_ROUNDS,
+        verbose_eval=False,
+    )
+    booster = booster[: booster.best_iteration + 1]
+    return np.asarray(booster.predict(dscore))
+
+
+def rank(
+    train_frame: pd.DataFrame,
+    seed: int = config.RANDOM_SEED,
+    min_group_size: int = config.MIN_FAIRNESS_GROUP_SIZE,
+) -> Ranking:
+    """Score every candidate on a split nested inside the training frame.
+
+    This function receives the TRAINING frame and nothing else. It is therefore
+    structurally incapable of touching the validation split, which is what keeps
+    selection bias out of the ratio the artifact reports.
+    """
+    inner_train, selection = split(train_frame, seed=seed, validation_size=config.SELECTION_SIZE)
+    labels = inner_train[config.TARGET_COLUMN]
+    truth = selection[config.TARGET_COLUMN]
+
+    baseline_probabilities = _fit(
+        apply(BASELINE, inner_train),
+        labels,
+        apply(BASELINE, selection),
+        truth,
+        BASELINE.params,
+    )
+    target_approval_rate = float((baseline_probabilities <= config.RISK_BAND_LOW_MAX).mean())
+
+    results: list[CandidateResult] = []
+    for spec in CANDIDATES:
+        try:
+            features = apply(spec, inner_train)
+            if features.empty or not len(features.columns):
+                raise ValueError("no features remain after drops")
+            probabilities = (
+                baseline_probabilities
+                if spec is BASELINE
+                else _fit(features, labels, apply(spec, selection), truth, spec.params)
+            )
+            mask = matched_adverse_mask(probabilities, target_approval_rate)
+            attributes = adverse_impact_ratios(selection, mask.tolist(), min_group_size)
+            ratios = {
+                a.attribute: a.adverse_impact_ratio
+                for a in attributes
+                if a.adverse_impact_ratio is not None
+            }
+            if not ratios:
+                raise ValueError("no protected attribute could be measured on the selection split")
+            results.append(
+                CandidateResult(
+                    name=spec.name,
+                    n_features=len(features.columns),
+                    roc_auc=float(roc_auc_score(truth, probabilities)),
+                    min_adverse_impact_ratio=min(ratios.values()),
+                    adverse_impact_ratios=ratios,
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - recorded, never swallowed
+            # A candidate that could not be scored is recorded, not skipped. A
+            # missing candidate would misrepresent the breadth of the search.
+            results.append(CandidateResult(name=spec.name, n_features=0, failed_reason=str(error)))
+
+    return Ranking(target_approval_rate=target_approval_rate, candidates=results)

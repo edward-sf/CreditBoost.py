@@ -3,6 +3,7 @@ the selection rule, and the ranking."""
 
 import dataclasses
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -14,8 +15,11 @@ from creditboost.search import (
     CANDIDATES,
     BaselineMissingError,
     CandidateSpec,
+    Ranking,
     UnknownFeatureError,
     apply,
+    matched_adverse_mask,
+    rank,
     select,
 )
 
@@ -225,3 +229,64 @@ def test_a_missing_or_failed_baseline_is_an_error():
         select([scored("other", auc=0.75, air=0.81)], baseline="baseline")
     with pytest.raises(BaselineMissingError):
         select([failed("baseline")], baseline="baseline")
+
+
+def test_the_matched_mask_hits_the_requested_approval_rate():
+    probabilities = np.linspace(0.0, 1.0, 1000)
+    mask = matched_adverse_mask(probabilities, approval_rate=0.75)
+    assert abs((~mask).mean() - 0.75) < 0.01
+
+
+def test_a_more_lenient_candidate_gains_nothing_from_being_lenient():
+    """THE load-bearing test of this milestone.
+
+    Candidate B's probabilities are candidate A's, halved. B ranks applicants
+    identically -- it is the same model wearing a lower scale -- so it must
+    score identically. At a FIXED threshold it would not: B approves everyone
+    and its ratio would read near 1.0, and a search ranking on that number
+    would reliably select whichever candidate approves the most people.
+    """
+    rng = np.random.default_rng(0)
+    a = rng.uniform(0.0, 0.4, size=1000)
+    b = a * 0.5
+
+    target = float((a <= config.RISK_BAND_LOW_MAX).mean())
+
+    mask_a = matched_adverse_mask(a, target)
+    mask_b = matched_adverse_mask(b, target)
+
+    assert np.array_equal(mask_a, mask_b)
+
+    # And the naive alternative really would have differed, which is what makes
+    # this test meaningful rather than vacuous.
+    assert not np.array_equal(a > config.RISK_BAND_LOW_MAX, b > config.RISK_BAND_LOW_MAX)
+
+
+def test_the_matched_mask_is_invariant_to_any_monotone_rescaling():
+    rng = np.random.default_rng(1)
+    probabilities = rng.uniform(0.01, 0.99, size=500)
+    rescaled = probabilities**2  # strictly increasing on (0, 1)
+    assert np.array_equal(
+        matched_adverse_mask(probabilities, 0.6), matched_adverse_mask(rescaled, 0.6)
+    )
+
+
+@pytest.mark.slow
+def test_rank_scores_every_candidate_and_puts_the_baseline_first(fixture_path):
+    frame = pd.read_csv(fixture_path)
+    ranking = rank(frame, min_group_size=10)
+
+    assert isinstance(ranking, Ranking)
+    assert [c.name for c in ranking.candidates][0] == BASELINE.name
+    assert len(ranking.candidates) == len(CANDIDATES)
+    assert 0.0 <= ranking.target_approval_rate <= 1.0
+    for candidate in ranking.candidates:
+        assert (candidate.failed_reason is None) != (candidate.roc_auc is None)
+
+
+@pytest.mark.slow
+def test_rank_is_deterministic(fixture_path):
+    frame = pd.read_csv(fixture_path)
+    first = rank(frame, min_group_size=10)
+    second = rank(frame, min_group_size=10)
+    assert first == second
