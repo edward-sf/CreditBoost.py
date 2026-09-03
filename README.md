@@ -12,9 +12,11 @@ Credit Default Risk dataset. Milestone 2 moved the model's bytes out of git into
 Release, leaving a checksum-pinned `models/model.lock.json` in their place. Milestone 3
 added adverse action reason codes, and removed marital status as a model feature. Milestone 4
 measures disparate impact across protected attributes at training time and refuses to write
-a model that fails the four-fifths rule. See [`CLAUDE.md`](CLAUDE.md) for the architecture,
-invariants, and roadmap; see the design spec and implementation plan under
-`docs/superpowers/` for the full reasoning.
+a model that fails the four-fifths rule. Milestone 5 searches for a less discriminatory
+alternative model specification on a split nested inside the training data, applies a 0.01
+AUC budget, and records the frontier in every production artifact. See [`CLAUDE.md`](CLAUDE.md)
+for the architecture, invariants, and roadmap; see the design spec and implementation plan
+under `docs/superpowers/` for the full reasoning.
 
 ## Tech stack
 
@@ -58,11 +60,18 @@ forbid redistributing it). Download `application_train.csv` from Kaggle's
 and place it at `data/application_train.csv` (gitignored).
 
 ```bash
+creditboost-search --data data/application_train.csv     # print the frontier, write nothing
 creditboost-train --data data/application_train.csv --provenance production
+creditboost-train --data data/application_train.csv --provenance production --search
 ```
 
-This writes `models/model.json` and `models/model_meta.json`, refusing to write anything
-if validation ROC-AUC falls below the floor in `config.py`.
+The `search` command is read-only and prints a frontier of model specifications ranked by
+their adverse impact ratio at a matched approval rate. The `--search` flag on `train` runs
+the same search at training time and adopts a less discriminatory alternative if one clears
+the AUC budget; otherwise it trains the baseline and stamps the frontier into the artifact.
+The search adds roughly four minutes to a training run. This writes `models/model.json` and
+`models/model_meta.json`, refusing to write anything if validation ROC-AUC falls below the
+floor in `config.py` or if `provenance` is `production` and no candidate could be scored.
 
 Publish what training produced as a GitHub Release, and rewrite the lockfile that pins it:
 
