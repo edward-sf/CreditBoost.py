@@ -59,9 +59,10 @@ and the model retrained as `model-v0.2.0`; the field is still accepted, under
 (a sex proxy) and `Pensioner` (an age proxy) as levels, so an `employment_profile` reason can
 implicate a protected characteristic indirectly. Unlike marital status these are levels
 rather than a whole prohibited-basis feature, and dropping employment type would cost real
-signal. Milestone 5 measured them — they move the ratio by negligible amounts, so they
-remain in the catalog as `maternity-to-working` and `income-type-proxies-dropped` so the
-finding is re-established on every search rather than remembered.
+signal. Milestone 5 measured them against the baseline min AIR of 0.8041:
+`maternity-to-working` moves it by 0.0000 and `income-type-proxies-dropped` by +0.0002.
+They remain in the catalog as `maternity-to-working` and `income-type-proxies-dropped` so
+the finding is re-established on every search rather than remembered.
 
 **Milestone 4 — disparate impact measurement.** Done. `creditboost-train` measures an
 adverse impact ratio per protected attribute on the validation split, stamps the report into
@@ -84,14 +85,25 @@ carries no such record.
 
 Measurement shaped every decision. Bootstrapping `model-v0.3.0` put the age ratio at 0.8100
 with sd 0.0046 and 1% of resamples already below the floor — it passed within noise, not
-comfortably. Sixteen small perturbations spanned 0.8058 to 0.8146, entirely inside that
-noise. The band threshold, by contrast, moves the ratio further than every model variant
-combined, which is exactly why it is excluded as a search axis rather than exploited.
+comfortably. A design-time probe over sixteen small perturbations spanned 0.8058 to 0.8146,
+entirely inside that noise, and showed why a narrow search of fine-tunings would not move
+the needle. The shipped catalog also contains sixteen candidates, but the real-data frontier
+is different in character: best AUC is `min-child-weight-50` at 0.7506 (admitting AUC ≥
+0.7406), `external-scores-only` reaches min AIR 0.8595 but is *excluded by the AUC budget*
+at a cost of 0.028, and `no-employment` sits inside the budget at 0.8087 but is *rejected
+by the noise guard* — a mere +0.0046 over baseline. Both guards firing, for different
+reasons, shows the rule discriminates rather than rubber-stamps. The band threshold, by
+contrast, moves the ratio further than every model variant combined, which is exactly why
+it is excluded as a search axis rather than exploited.
 
-The one real finding: removing the external bureau scores makes fairness markedly worse
-(0.8041 to 0.7023), so the disparity lives in the application-form features. `model-v0.4.0`
-records a negative result — no alternative cleared the budget — which is the business
-necessity evidence, not a failure.
+`model-v0.4.0` carries the identical fairness ratios as `model-v0.3.0` — sex 0.8684, age
+0.8100, marital status 0.8179 — because ranking reads only the training split and the final
+fit was unchanged; the model's sha256 digest did not budge. The milestone ships **no fairness
+improvement**: age remains at 0.8100 against the 0.80 floor. What is new is that every
+production model now carries recorded evidence it was searched, a negative result that
+establishes business necessity. The one real finding: removing the external bureau scores
+makes fairness markedly worse (0.8041 to 0.7023), locating the disparity in the
+application-form features, not the bureau scores.
 
 - Design spec: `docs/superpowers/specs/2026-09-02-creditboost-less-discriminatory-alternative-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-09-02-creditboost-less-discriminatory-alternative.md`
