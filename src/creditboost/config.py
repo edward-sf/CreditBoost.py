@@ -263,3 +263,20 @@ MIN_FAIRNESS_GROUP_SIZE = 100
 
 # The four-fifths rule. A gate, not a dial: see the AUC floor above.
 MIN_ADVERSE_IMPACT_RATIO = 0.80
+
+# --- Alternative search ----------------------------------------------------
+
+# How much validation ROC-AUC the search may trade away for a fairer model.
+# This is where "comparable performance" is written down: the burden-shifting
+# test asks whether a LESS DISCRIMINATORY ALTERNATIVE ACHIEVING COMPARABLE
+# PERFORMANCE exists, and a number stated once is more honest than a judgment
+# made per release. It is a tight budget on the measured frontier -- the
+# external-scores-only model costs 0.028 AUC and falls outside it.
+MAX_AUC_SACRIFICE = 0.01
+
+# A winning candidate must beat the baseline's minimum adverse impact ratio by
+# more than this, or the baseline is kept. Grounded in measurement: 300
+# bootstrap resamples of the validation split put AIR's standard deviation at
+# about 0.005, and the selection split is smaller still. Without this guard the
+# search churns the shipped model on noise.
+MIN_AIR_IMPROVEMENT = 0.01

@@ -28,13 +28,14 @@ it. The import-linter contract in pyproject.toml enforces that.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import pandas as pd
 
 from . import config
 from .features import transform
+from .schema import CandidateResult
 
 
 class UnknownFeatureError(ValueError):
@@ -138,3 +139,48 @@ def apply(spec: CandidateSpec, frame: pd.DataFrame) -> pd.DataFrame:
 
     out = transform(raw)
     return out[[column for column in out.columns if column not in spec.drops]]
+
+
+class BaselineMissingError(ValueError):
+    """The baseline candidate is absent from the frontier, or failed to train."""
+
+
+def select(
+    candidates: Sequence[CandidateResult],
+    baseline: str,
+    auc_budget: float = config.MAX_AUC_SACRIFICE,
+    min_improvement: float = config.MIN_AIR_IMPROVEMENT,
+) -> str:
+    """The name of the candidate to adopt.
+
+    Among candidates whose ROC-AUC is within `auc_budget` of the best scored
+    candidate, take the highest minimum adverse impact ratio; then keep the
+    baseline unless the winner beats it by more than `min_improvement`.
+
+    Every candidate here was scored at the same matched approval rate, so the
+    comparison is like-for-like by construction. Ties break by AUC and then by
+    declaration order, which makes the result deterministic under a fixed seed.
+    """
+    scored = [c for c in candidates if c.failed_reason is None]
+    order = {candidate.name: position for position, candidate in enumerate(candidates)}
+
+    base = next((c for c in scored if c.name == baseline), None)
+    if base is None:
+        raise BaselineMissingError(
+            f"baseline {baseline!r} is not among the scored candidates. The "
+            "baseline must always train: without it there is nothing to "
+            "compare an alternative against."
+        )
+
+    best_auc = max(c.roc_auc for c in scored)  # type: ignore[type-var]
+    eligible = [c for c in scored if c.roc_auc >= best_auc - auc_budget]  # type: ignore[operator]
+
+    winner = min(
+        eligible,
+        key=lambda c: (-c.min_adverse_impact_ratio, -c.roc_auc, order[c.name]),  # type: ignore[operator]
+    )
+
+    improvement = winner.min_adverse_impact_ratio - base.min_adverse_impact_ratio  # type: ignore[operator]
+    if improvement <= min_improvement:
+        return base.name
+    return winner.name
