@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-MODEL_VERSION = "0.3.0"
+MODEL_VERSION = "0.4.0"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent.parent
