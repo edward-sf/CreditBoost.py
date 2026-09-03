@@ -2,6 +2,7 @@ import http.server
 import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -12,12 +13,15 @@ from creditboost.artifact import FeatureOrderMismatchError
 from creditboost.artifact_cli import (
     ChecksumMismatchError,
     ProvenanceError,
+    SelectionError,
     VersionMismatchError,
     main,
     verify_artifact,
 )
-from creditboost.schema import ModelMetadata
-from tests.conftest import a_passing_fairness_report
+from creditboost.schema import CandidateResult, ModelMetadata
+from tests.conftest import a_passing_fairness_report, a_search_report
+
+_UNSET: Any = object()
 
 
 def make_artifact(
@@ -27,6 +31,7 @@ def make_artifact(
     version: str | None = None,
     metadata_feature_order: list[str] | None = None,
     booster_feature_names: list[str] | None = None,
+    selection: Any = _UNSET,
 ) -> tuple[Path, Path]:
     """Write a model.json + model_meta.json pair into `directory`.
 
@@ -55,6 +60,7 @@ def make_artifact(
         xgboost_version=xgb.__version__,
         provenance=provenance,  # type: ignore[arg-type]
         fairness=a_passing_fairness_report(),
+        selection=a_search_report() if selection is _UNSET else selection,
     )
     metadata_path.write_text(metadata.model_dump_json(indent=2) + "\n")
     return model_path, metadata_path
@@ -437,3 +443,56 @@ def test_lock_honours_an_explicit_asset_base_url(tmp_path: Path) -> None:
     )
 
     assert lockfile.read(lock_path).asset_base_url == "https://example.test/dl"
+
+
+def test_verify_rejects_a_production_artifact_that_was_never_searched(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "models"
+    make_artifact(directory, selection=None)
+    with pytest.raises(SelectionError, match="never searched"):
+        verify_artifact(directory, lock_for(directory, tmp_path))
+
+
+def test_verify_accepts_a_production_artifact_carrying_a_search(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "models"
+    make_artifact(directory)
+    verify_artifact(directory, lock_for(directory, tmp_path))
+
+
+def test_verify_still_accepts_a_fixture_artifact_without_a_search(
+    tmp_path: Path,
+) -> None:
+    """A fixture artifact need not have been searched: the four-minute search is
+    a production concern, and the provenance gate already keeps fixture models
+    out of published images."""
+    directory = tmp_path / "models"
+    make_artifact(directory, provenance="fixture", selection=None)
+    verify_artifact(directory, lock_for(directory, tmp_path), allow_fixture=True)
+
+
+def test_verify_rejects_a_production_artifact_with_only_failed_candidates(
+    tmp_path: Path,
+) -> None:
+    """A search report where all candidates failed to train establishes nothing.
+    Such a report must never read as a successful search."""
+    directory = tmp_path / "models"
+    from creditboost.schema import SearchReport
+
+    failed_report = SearchReport(
+        baseline="baseline",
+        selected="baseline",
+        auc_budget=0.01,
+        min_air_improvement=0.01,
+        target_approval_rate=0.74,
+        ranking_basis="matched approval rate on the selection split",
+        candidates=[
+            CandidateResult(name="baseline", n_features=0, failed_reason="out of memory"),
+            CandidateResult(name="alt1", n_features=0, failed_reason="convergence"),
+        ],
+    )
+    make_artifact(directory, selection=failed_report)
+    with pytest.raises(SelectionError, match="no candidate"):
+        verify_artifact(directory, lock_for(directory, tmp_path))
