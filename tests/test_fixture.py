@@ -49,3 +49,21 @@ def test_generator_is_deterministic():
     first = build_fixture()
     second = build_fixture()
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_fixture_has_every_fairness_attribute(frame):
+    """CODE_GENDER is not a request field -- the service never accepts it -- but
+    fairness measurement needs it, so the fixture carries it anyway."""
+    for column in config.FAIRNESS_ATTRIBUTES:
+        assert column in frame.columns
+
+
+def test_fixture_gender_split_is_deterministic_and_balanced(frame):
+    """The split is alternated by index rather than drawn, so it is
+    reproducible across regenerations and gender is never confounded with row
+    position. This does NOT make gender measurable: measurement happens on the
+    ~40-row validation split, not this 200-row frame, so both groups fall below
+    `config.MIN_FAIRNESS_GROUP_SIZE` regardless of how this frame is split."""
+    counts = frame["CODE_GENDER"].value_counts()
+    assert set(counts.index) == {"F", "M"}
+    assert counts.min() == 100

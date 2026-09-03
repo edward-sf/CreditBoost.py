@@ -80,6 +80,19 @@ def test_marital_status_is_accepted_but_never_modelled():
     assert "NAME_FAMILY_STATUS" not in config.CATEGORICAL_LEVELS
 
 
+def test_fairness_attributes_are_never_model_features():
+    """FAIRNESS_ATTRIBUTES and PROTECTED_ATTRIBUTES hold identical contents
+    today, but they are deliberately separate lists making two different
+    statements: PROTECTED_ATTRIBUTES is a prohibition (never a model feature),
+    FAIRNESS_ATTRIBUTES is a requirement (must be available to measure). A
+    future attribute added only to FAIRNESS_ATTRIBUTES -- to be measured but
+    not guarded by the feature-list disjointness test above -- would slip a
+    protected characteristic into the model with no test catching it.
+    Measuring an attribute must never mean modelling it."""
+    overlap = set(config.FAIRNESS_ATTRIBUTES) & set(config.FEATURE_ORDER)
+    assert not overlap, f"fairness attribute(s) used as model features: {sorted(overlap)}"
+
+
 def test_monitoring_only_fields_are_all_protected_attributes():
     """A field accepted but not modelled needs a reason to exist. The only
     sanctioned reason is that it is a protected attribute kept for monitoring."""

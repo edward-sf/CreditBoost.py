@@ -11,6 +11,7 @@ from creditboost.artifact import (
     save,
 )
 from creditboost.schema import ModelMetadata
+from tests.conftest import a_passing_fairness_report
 
 
 @pytest.fixture
@@ -32,6 +33,7 @@ def metadata(feature_order: list[str] | None = None) -> ModelMetadata:
         metrics={"roc_auc": 0.75},
         xgboost_version=xgb.__version__,
         provenance="fixture",
+        fairness=a_passing_fairness_report(),
     )
 
 

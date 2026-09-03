@@ -53,3 +53,21 @@ def test_split_is_reproducible_for_a_fixed_seed(fixture_path):
     first, _ = split(frame)
     second, _ = split(frame)
     assert list(first.index) == list(second.index)
+
+
+def test_training_data_without_a_fairness_attribute_is_rejected(tmp_path):
+    """Fairness cannot be gated on attributes that are not there, so their
+    absence is an error rather than a silent skip."""
+    import pandas as pd
+    import pytest
+
+    from creditboost import config
+    from creditboost.data import MissingColumnsError, load_training_frame
+
+    frame = pd.read_csv(config.REPO_ROOT / "tests" / "fixtures" / "sample.csv")
+    frame = frame.drop(columns=["CODE_GENDER"])
+    path = tmp_path / "no_gender.csv"
+    frame.to_csv(path, index=False)
+
+    with pytest.raises(MissingColumnsError, match="CODE_GENDER"):
+        load_training_frame(path)

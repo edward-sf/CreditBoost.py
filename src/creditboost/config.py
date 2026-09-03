@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-MODEL_VERSION = "0.2.0"
+MODEL_VERSION = "0.3.0"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent.parent
@@ -239,3 +239,27 @@ REASON_TEXT: dict[str, ReasonText] = {
         absent="Product type was not provided",
     ),
 }
+
+# --- Disparate impact ------------------------------------------------------
+
+# Columns that must be present in training data so outcomes can be measured
+# across protected groups. This overlaps PROTECTED_ATTRIBUTES but is a different
+# statement and must not be merged with it: PROTECTED_ATTRIBUTES says what may
+# never be a model feature, a prohibition; FAIRNESS_ATTRIBUTES says what must be
+# available to measure, a requirement. CODE_GENDER is required here while
+# remaining something the service never accepts from a caller.
+FAIRNESS_ATTRIBUTES: tuple[str, ...] = (
+    "CODE_GENDER",
+    "DAYS_BIRTH",
+    "NAME_FAMILY_STATUS",
+)
+
+# ECOA protects applicants aged 62 and over specifically, so age is bucketed at
+# that line rather than by quantile.
+ECOA_PROTECTED_AGE = 62
+
+# A rate estimated from a handful of rows is too noisy to gate a release on.
+MIN_FAIRNESS_GROUP_SIZE = 100
+
+# The four-fifths rule. A gate, not a dial: see the AUC floor above.
+MIN_ADVERSE_IMPACT_RATIO = 0.80

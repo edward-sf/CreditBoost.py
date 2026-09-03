@@ -23,7 +23,10 @@ def load_training_frame(path: Path) -> pd.DataFrame:
 
     frame = pd.read_csv(path)
 
-    required = {*config.REQUEST_FIELDS, config.TARGET_COLUMN}
+    # FAIRNESS_ATTRIBUTES as well as REQUEST_FIELDS: training gates on disparate
+    # impact, which cannot be measured without the attributes. CODE_GENDER is
+    # required here while remaining something the service never accepts.
+    required = {*config.REQUEST_FIELDS, *config.FAIRNESS_ATTRIBUTES, config.TARGET_COLUMN}
     missing = sorted(required - set(frame.columns))
     if missing:
         raise MissingColumnsError(f"training data is missing columns: {', '.join(missing)}")

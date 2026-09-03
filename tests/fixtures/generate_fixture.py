@@ -34,6 +34,16 @@ MONITORING_ONLY_LEVELS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Analysis-only columns: present in training data so outcomes can be measured
+# across groups, never accepted from a caller, never a model feature. This is a
+# third category, distinct from model features and from monitoring-only request
+# fields. Derived from config.FAIRNESS_ATTRIBUTES rather than hardcoded, so
+# adding a fourth attribute there flows straight through to the column set the
+# fixture generates instead of requiring this file to be edited in lockstep.
+ANALYSIS_ONLY_FIELDS: tuple[str, ...] = tuple(
+    c for c in config.FAIRNESS_ATTRIBUTES if c not in config.REQUEST_FIELDS
+)
+
 
 def build_fixture() -> pd.DataFrame:
     rng = np.random.default_rng(config.RANDOM_SEED)
@@ -89,7 +99,16 @@ def build_fixture() -> pd.DataFrame:
     for column, levels in MONITORING_ONLY_LEVELS.items():
         frame[column] = rng.choice(list(levels), size=N_ROWS)
 
-    return frame[list(config.REQUEST_FIELDS) + [config.TARGET_COLUMN]]
+    # Deterministic and exactly balanced rather than drawn: alternating by index
+    # makes the fixture reproducible across regenerations and keeps gender from
+    # being confounded with row position. This does not make gender measurable
+    # -- fairness measurement runs on the ~40-row validation split, not this
+    # 200-row frame, so both groups fall below the minimum group size
+    # regardless. Alternating by index also consumes no rng, so no existing
+    # column shifts position in the stream.
+    frame["CODE_GENDER"] = np.where(np.arange(N_ROWS) % 2 == 0, "F", "M")
+
+    return frame[list(config.REQUEST_FIELDS) + list(ANALYSIS_ONLY_FIELDS) + [config.TARGET_COLUMN]]
 
 
 if __name__ == "__main__":

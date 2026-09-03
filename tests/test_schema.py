@@ -2,7 +2,15 @@ import pytest
 from pydantic import ValidationError
 
 from creditboost import config
-from creditboost.schema import ModelMetadata, PredictRequest, PredictResponse
+from creditboost.schema import (
+    AttributeFairness,
+    FairnessReport,
+    GroupRate,
+    ModelMetadata,
+    PredictRequest,
+    PredictResponse,
+)
+from tests.conftest import a_passing_fairness_report
 
 
 def minimal_payload() -> dict:
@@ -81,6 +89,7 @@ def test_metadata_round_trips_through_json():
         metrics={"roc_auc": 0.75, "pr_auc": 0.24, "brier": 0.068},
         xgboost_version="2.1.0",
         provenance="fixture",
+        fairness=a_passing_fairness_report(),
     )
     assert ModelMetadata.model_validate_json(metadata.model_dump_json()) == metadata
 
@@ -96,4 +105,75 @@ def test_metadata_rejects_an_unknown_provenance():
             metrics={},
             xgboost_version="2.1.0",
             provenance="guesswork",
+            fairness=a_passing_fairness_report(),
         )
+
+
+def test_a_measured_attribute_is_accepted():
+    attribute = AttributeFairness(
+        attribute="CODE_GENDER",
+        adverse_impact_ratio=0.87,
+        groups=[
+            GroupRate(group="F", adverse_rate=0.222, n=40561),
+            GroupRate(group="M", adverse_rate=0.325, n=20940),
+        ],
+    )
+    assert attribute.unmeasured_reason is None
+
+
+def test_an_unmeasured_attribute_is_accepted():
+    attribute = AttributeFairness(
+        attribute="NAME_FAMILY_STATUS",
+        unmeasured_reason="fewer than two groups reached the minimum size of 100",
+    )
+    assert attribute.adverse_impact_ratio is None
+
+
+def test_an_attribute_cannot_be_both_measured_and_unmeasured():
+    """'Not measured' reading as 'passed' is the failure that would make the
+    whole report worthless, so the two states are mutually exclusive."""
+
+    with pytest.raises(ValidationError):
+        AttributeFairness(
+            attribute="CODE_GENDER",
+            adverse_impact_ratio=0.87,
+            unmeasured_reason="also unmeasured, somehow",
+        )
+
+
+def test_an_attribute_must_be_one_or_the_other():
+    with pytest.raises(ValidationError):
+        AttributeFairness(attribute="CODE_GENDER")
+
+
+def test_a_ratio_above_one_is_rejected():
+    """min/max over favourable rates cannot exceed 1. A value above it means the
+    ratio was computed upside down."""
+
+    with pytest.raises(ValidationError):
+        AttributeFairness(attribute="CODE_GENDER", adverse_impact_ratio=1.23)
+
+
+def test_a_ratio_below_zero_is_rejected():
+    """A ratio of two rates in [0, 1] can never be negative. A negative value
+    means the ratio was computed from something other than favourable rates."""
+
+    with pytest.raises(ValidationError):
+        AttributeFairness(attribute="CODE_GENDER", adverse_impact_ratio=-0.1)
+
+
+def test_a_fairness_report_round_trips_through_json():
+    report = FairnessReport(
+        adverse_definition="band != low",
+        band_low_max=0.10,
+        min_group_size=100,
+        attributes=[
+            AttributeFairness(
+                attribute="CODE_GENDER",
+                adverse_impact_ratio=0.868,
+                groups=[GroupRate(group="F", adverse_rate=0.222, n=40561)],
+            )
+        ],
+    )
+
+    assert FairnessReport.model_validate_json(report.model_dump_json()) == report

@@ -73,11 +73,15 @@ type = "forbidden"
 source_modules = [
     "creditboost.serve",
     "creditboost.artifact",
+    "creditboost.artifact_cli",
+    "creditboost.lockfile",
     "creditboost.features",
     "creditboost.schema",
     "creditboost.banding",
+    "creditboost.reasons",
     "creditboost.config",
     "creditboost.hashing",
+    "creditboost.fairness",
 ]
 forbidden_modules = [
     "creditboost.data",
