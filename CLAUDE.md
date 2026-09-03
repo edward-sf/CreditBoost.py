@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Milestones 1, 2 and 3 are implemented and tested.** The package lives under
+**Milestones 1 through 4 are implemented and tested.** The package lives under
 `src/creditboost/`, tests under `tests/`, and the production-trained artifact lives in a
 GitHub Release pinned by `models/model.lock.json` — it is not committed.
 
@@ -60,6 +60,23 @@ implicate a protected characteristic indirectly. Unlike marital status these are
 rather than a whole prohibited-basis feature, and dropping employment type would cost real
 signal. It belongs to disparate-impact measurement, which is unspecced.
 
+**Milestone 4 — disparate impact measurement.** Done. `creditboost-train` measures an
+adverse impact ratio per protected attribute on the validation split, stamps the report into
+the artifact, and refuses to write a model below 0.80. `model-v0.3.0` measures sex 0.868,
+marital status 0.818, age 0.810.
+
+The four-fifths rule had to be applied to the right outcome to mean anything. With adverse
+defined as the `high` band, an applicant under 62 is denied at 9.19× the rate of one aged 62
+or over and the test returns 0.974 — a gate built that way would pass any model and
+manufacture documented assurance it had not established.
+
+- Design spec: `docs/superpowers/specs/2026-09-02-creditboost-disparate-impact-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-09-02-creditboost-disparate-impact.md`
+
+**Still open:** the `NAME_INCOME_TYPE` proxy levels recorded in Milestone 3 are now
+measurable but not resolved; remediation of any disparity found, intersectional analysis,
+and fairness of the reason codes across groups are all unspecced.
+
 ## Architecture
 
 The design's central constraint is that **train/serve skew is prevented structurally, not
@@ -102,6 +119,26 @@ understanding why it exists.
   features, not reads — the transform still reads `DAYS_BIRTH` to derive `employed_to_age`,
   which Regulation B allows in an empirically derived, statistically sound scoring system.
   Marital status has no equivalent allowance, which is why it is not a feature.
+- **Every shipped model has measured disparate impact.** `ModelMetadata.fairness` is
+  required, so an artifact without it cannot be loaded, served, or built into an image.
+  `creditboost-train` computes an adverse impact ratio per attribute in
+  `FAIRNESS_ATTRIBUTES` and refuses to write a model below
+  `MIN_ADVERSE_IMPACT_RATIO` (0.80). There is no override flag.
+- **The adverse outcome is `band != "low"`, and the ratio is `min/max` over favourable
+  rates.** Not `band == "high"`: at a 97% approval rate the ratio on approvals compresses
+  toward 1.0 and cannot discriminate — a 9.19× age disparity passes at 0.974. Reg B treats
+  credit on substantially different terms as adverse action. Inverting the ratio would make
+  every failing model read as passing; a test guards the direction.
+- **"Not measured" never reads as "passed."** Exactly one of `adverse_impact_ratio` and
+  `unmeasured_reason` is set, and `failing_attributes` never returns an unmeasured one.
+- **`FAIRNESS_ATTRIBUTES` is a requirement, `PROTECTED_ATTRIBUTES` a prohibition.** They
+  overlap and must not be merged: one says what must be present in training data to measure
+  outcomes, the other what may never be a model feature. `CODE_GENDER` is in both — required
+  in training data, never accepted from a caller.
+- **When risk-band policy moves, fairness must be re-measured.** The ratio is measured at
+  `RISK_BAND_LOW_MAX`, which is policy that changes without retraining, so the report records
+  the threshold it was measured under. This one is documentation rather than a test:
+  enforcing it would revoke the invariant that band thresholds change without retraining.
 - **`MONITORING_ONLY_FIELDS` are accepted but never transformed.** Reg B §1002.13 requires
   collecting certain protected attributes precisely so fair-lending monitoring is possible.
   An attribute a service refuses to accept cannot be collected retroactively; a feature can

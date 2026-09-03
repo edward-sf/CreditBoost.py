@@ -10,9 +10,11 @@ Milestone 1 built a deliberately minimal, complete path through all three subsys
 training, a served model, and CI/CD — for a fixed 21-feature model trained on the Home
 Credit Default Risk dataset. Milestone 2 moved the model's bytes out of git into a GitHub
 Release, leaving a checksum-pinned `models/model.lock.json` in their place. Milestone 3
-added adverse action reason codes, and removed marital status as a model feature. See [`CLAUDE.md`](CLAUDE.md) for the architecture, invariants,
-and roadmap; see the design spec and implementation plan under `docs/superpowers/` for the
-full reasoning.
+added adverse action reason codes, and removed marital status as a model feature. Milestone 4
+measures disparate impact across protected attributes at training time and refuses to write
+a model that fails the four-fifths rule. See [`CLAUDE.md`](CLAUDE.md) for the architecture,
+invariants, and roadmap; see the design spec and implementation plan under
+`docs/superpowers/` for the full reasoning.
 
 ## Tech stack
 
@@ -101,7 +103,30 @@ Liveness/readiness check. Returns the loaded model's version and provenance.
 ### `GET /metadata`
 
 The full metadata sidecar: training timestamp, dataset hash, row count, feature order,
-validation metrics, xgboost version, and provenance.
+validation metrics, xgboost version, provenance, and a `fairness` block. The ratio is the
+four-fifths adverse impact ratio measured on the validation split at training time, adverse
+meaning the applicant was not auto-approved (`band != "low"`); a model below 0.80 on any
+measured attribute cannot be trained.
+
+```json
+{
+  "fairness": {
+    "adverse_definition": "band != low",
+    "band_low_max": 0.1,
+    "min_group_size": 100,
+    "attributes": [
+      {
+        "attribute": "CODE_GENDER",
+        "adverse_impact_ratio": 0.868,
+        "groups": [
+          {"group": "F", "adverse_rate": 0.222, "n": 40561},
+          {"group": "M", "adverse_rate": 0.325, "n": 20940}
+        ]
+      }
+    ]
+  }
+}
+```
 
 ### `POST /predict`
 
@@ -157,6 +182,7 @@ src/creditboost/
   data.py                # dataset loading, validation, train/valid split (train-only)
   artifact.py            # save/load + the train/serve skew gate
   reasons.py             # contributions -> at most four adverse action reasons
+  fairness.py            # adverse impact ratios; the training-time gate
   hashing.py             # file_sha256, dependency-free so both sides can import it
   lockfile.py            # the ModelLock pointer: release tag + a sha256 per asset
   artifact_cli.py        # creditboost-artifact: fetch / verify / lock
