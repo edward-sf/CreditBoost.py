@@ -69,9 +69,13 @@ The `search` command is read-only and prints a frontier of model specifications 
 their adverse impact ratio at a matched approval rate. The `--search` flag on `train` runs
 the same search at training time and adopts a less discriminatory alternative if one clears
 the AUC budget; otherwise it trains the baseline and stamps the frontier into the artifact.
-The search adds roughly four minutes to a training run. This writes `models/model.json` and
-`models/model_meta.json`, refusing to write anything if validation ROC-AUC falls below the
-floor in `config.py` or if `provenance` is `production` and no candidate could be scored.
+The search adds roughly four minutes to a training run. `creditboost-train` writes
+`models/model.json` and `models/model_meta.json`, but refuses if validation ROC-AUC falls
+below the floor in `config.py` or if any adverse impact ratio falls below
+`MIN_ADVERSE_IMPACT_RATIO`. `creditboost-artifact verify` — which runs inside the Docker
+builder — refuses a `provenance: "production"` artifact that carries no selection report,
+or one whose frontier contains no scored candidate; these gates ensure an image containing
+an incomplete or unfair-search artifact cannot be built.
 
 Publish what training produced as a GitHub Release, and rewrite the lockfile that pins it:
 
