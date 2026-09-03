@@ -86,4 +86,5 @@ source_modules = [
 forbidden_modules = [
     "creditboost.data",
     "creditboost.train",
+    "creditboost.search",
 ]
