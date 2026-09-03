@@ -345,7 +345,7 @@ def test_a_non_baseline_winner_writes_nothing(tmp_path, fixture_path, monkeypatc
     assert "no-occupation" in caplog.text
 
 
-def test_ranking_never_sees_the_validation_split(fixture_path, monkeypatch):
+def test_ranking_never_sees_the_validation_split(fixture_path, tmp_path, monkeypatch):
     """rank() takes the training frame and nothing else. If a later refactor
     ever hands it the whole frame, this fails."""
     frame = load_training_frame(fixture_path)
@@ -373,9 +373,9 @@ def test_ranking_never_sees_the_validation_split(fixture_path, monkeypatch):
             "--data",
             str(fixture_path),
             "--model-out",
-            str(fixture_path.parent / "model.json"),
+            str(tmp_path / "model.json"),
             "--metadata-out",
-            str(fixture_path.parent / "model_meta.json"),
+            str(tmp_path / "model_meta.json"),
             "--provenance",
             "fixture",
             "--search",
