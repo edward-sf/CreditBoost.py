@@ -252,6 +252,12 @@ def test_a_candidate_cannot_have_roc_auc_with_failed_reason():
         CandidateResult(name="x", n_features=3, roc_auc=0.7, failed_reason="boom")
 
 
+def test_a_candidate_cannot_have_air_with_failed_reason():
+    """A candidate claiming a fairness score cannot also claim it failed."""
+    with pytest.raises(ValidationError):
+        CandidateResult(name="x", n_features=3, min_adverse_impact_ratio=0.9, failed_reason="boom")
+
+
 def test_selected_must_name_a_candidate_in_the_frontier():
     with pytest.raises(ValidationError):
         a_report(selected="a-candidate-that-was-never-run")
