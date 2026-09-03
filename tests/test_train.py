@@ -1,8 +1,9 @@
 import pytest
 
-from creditboost import config
+from creditboost import config, search
 from creditboost.artifact import load
 from creditboost.data import load_training_frame, split
+from creditboost.schema import CandidateResult, ModelMetadata
 from creditboost.train import fit, main
 from tests.conftest import a_passing_fairness_report
 
@@ -211,3 +212,175 @@ def test_a_failing_ratio_writes_no_artifact(fixture_path, tmp_path, monkeypatch)
     assert code == 1
     assert not model_path.exists()
     assert not meta_path.exists()
+
+
+def test_fit_accepts_a_candidate_spec(fixture_path):
+    """A spec with drops produces a model over fewer features."""
+    frame = load_training_frame(fixture_path)
+    train_frame, valid_frame = split(frame)
+    spec = search.CandidateSpec(name="fewer", drops=("CNT_CHILDREN",))
+    booster, _ = fit(train_frame, valid_frame, spec=spec)
+    assert "CNT_CHILDREN" not in (booster.feature_names or [])
+
+
+@pytest.mark.slow
+def test_search_stamps_a_report_naming_a_real_candidate(tmp_path, fixture_path):
+    model_out = tmp_path / "model.json"
+    metadata_out = tmp_path / "model_meta.json"
+    code = main(
+        [
+            "--data",
+            str(fixture_path),
+            "--model-out",
+            str(model_out),
+            "--metadata-out",
+            str(metadata_out),
+            "--provenance",
+            "fixture",
+            "--search",
+        ]
+    )
+    assert code == 0
+    metadata = ModelMetadata.model_validate_json(metadata_out.read_text())
+    assert metadata.selection is not None
+    names = {c.name for c in metadata.selection.candidates}
+    assert metadata.selection.selected in names
+    assert metadata.selection.baseline == search.BASELINE.name
+    assert metadata.selection.ranking_basis == search.RANKING_BASIS
+
+
+@pytest.mark.slow
+def test_the_stamped_fairness_report_is_the_one_measured_at_the_band_threshold(
+    tmp_path, fixture_path
+):
+    """The search scores candidates at a matched threshold of its own. That
+    number must never become the artifact's fairness report, which is measured
+    at config.RISK_BAND_LOW_MAX on the validation split."""
+    model_out = tmp_path / "model.json"
+    metadata_out = tmp_path / "model_meta.json"
+    main(
+        [
+            "--data",
+            str(fixture_path),
+            "--model-out",
+            str(model_out),
+            "--metadata-out",
+            str(metadata_out),
+            "--provenance",
+            "fixture",
+            "--search",
+        ]
+    )
+    metadata = ModelMetadata.model_validate_json(metadata_out.read_text())
+    assert metadata.fairness.band_low_max == config.RISK_BAND_LOW_MAX
+    assert metadata.fairness.adverse_definition == "band != low"
+
+
+def test_without_search_no_selection_report_is_written(tmp_path, fixture_path):
+    model_out = tmp_path / "model.json"
+    metadata_out = tmp_path / "model_meta.json"
+    code = main(
+        [
+            "--data",
+            str(fixture_path),
+            "--model-out",
+            str(model_out),
+            "--metadata-out",
+            str(metadata_out),
+            "--provenance",
+            "fixture",
+        ]
+    )
+    assert code == 0
+    metadata = ModelMetadata.model_validate_json(metadata_out.read_text())
+    assert metadata.selection is None
+
+
+def test_a_non_baseline_winner_writes_nothing(tmp_path, fixture_path, monkeypatch, caplog):
+    """Adopting a candidate is a reviewed code change. Training must refuse and
+    say what to change, not silently ship a model whose feature set disagrees
+    with the code."""
+    model_out = tmp_path / "model.json"
+    metadata_out = tmp_path / "model_meta.json"
+
+    monkeypatch.setattr(
+        "creditboost.train.search.rank",
+        lambda frame, **kwargs: search.Ranking(
+            target_approval_rate=0.75,
+            candidates=[
+                CandidateResult(
+                    name=search.BASELINE.name,
+                    n_features=20,
+                    roc_auc=0.75,
+                    min_adverse_impact_ratio=0.81,
+                    adverse_impact_ratios={"DAYS_BIRTH": 0.81},
+                ),
+                CandidateResult(
+                    name="no-occupation",
+                    n_features=19,
+                    roc_auc=0.75,
+                    min_adverse_impact_ratio=0.95,
+                    adverse_impact_ratios={"DAYS_BIRTH": 0.95},
+                ),
+            ],
+        ),
+    )
+
+    code = main(
+        [
+            "--data",
+            str(fixture_path),
+            "--model-out",
+            str(model_out),
+            "--metadata-out",
+            str(metadata_out),
+            "--provenance",
+            "fixture",
+            "--search",
+        ]
+    )
+    assert code == 1
+    assert not model_out.exists()
+    assert not metadata_out.exists()
+    assert "no-occupation" in caplog.text
+
+
+def test_ranking_never_sees_the_validation_split(fixture_path, monkeypatch):
+    """rank() takes the training frame and nothing else. If a later refactor
+    ever hands it the whole frame, this fails."""
+    frame = load_training_frame(fixture_path)
+    train_frame, valid_frame = split(frame)
+    seen = {}
+
+    def spy(passed_frame, **kwargs):
+        seen["n"] = len(passed_frame)
+        return search.Ranking(
+            target_approval_rate=0.75,
+            candidates=[
+                CandidateResult(
+                    name=search.BASELINE.name,
+                    n_features=20,
+                    roc_auc=0.75,
+                    min_adverse_impact_ratio=0.81,
+                    adverse_impact_ratios={"DAYS_BIRTH": 0.81},
+                )
+            ],
+        )
+
+    monkeypatch.setattr("creditboost.train.search.rank", spy)
+    main(
+        [
+            "--data",
+            str(fixture_path),
+            "--model-out",
+            str(fixture_path.parent / "model.json"),
+            "--metadata-out",
+            str(fixture_path.parent / "model_meta.json"),
+            "--provenance",
+            "fixture",
+            "--search",
+        ]
+    )
+
+    assert seen["n"] == len(train_frame)
+    assert seen["n"] != len(frame)

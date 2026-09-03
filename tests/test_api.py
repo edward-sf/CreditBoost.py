@@ -280,3 +280,12 @@ def test_metadata_exposes_the_fairness_report(client):
     assert report["adverse_definition"] == "band != low"
     assert report["band_low_max"] == config.RISK_BAND_LOW_MAX
     assert "attributes" in report
+
+
+def test_metadata_exposes_the_search_report(client):
+    """The endpoint dumps the whole ModelMetadata, so the frontier arrives with
+    no endpoint change. It contains aggregate model statistics only, never
+    applicant data, and a service claiming to have searched should publish the
+    search."""
+    body = client.get("/metadata").json()
+    assert "selection" in body
